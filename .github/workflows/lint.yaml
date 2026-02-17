@@ -61,15 +61,15 @@ jobs:
 
   lint-opam:
     strategy:
-    fail-fast: false
-    matrix:
-      os:
-        - ubuntu-latest
-        # - macos-latest
-      ocaml-version:
-        - "5.2.0"
-        - "5.3.0"
-        - "5.4.0"
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          # - macos-latest
+        ocaml-version:
+          - "5.2.0"
+          - "5.3.0"
+          - "5.4.0"
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout tree
