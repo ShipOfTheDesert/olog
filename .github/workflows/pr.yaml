@@ -1,0 +1,47 @@
+name: PR
+
+on:
+  pull_request:
+    branches:
+      - main
+
+# Cancel any previous runs of this workflow for the same PR.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          # - macos-latest
+        ocaml-version:
+          - "5.2.0"
+          - "5.3.0"
+          - "5.4.0"
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: extractions/setup-just@v3
+        with:
+          just-version: '1.46.0'
+
+      - name: Set-up OCaml
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: ${{ matrix.ocaml-version }}
+          dune-cache: true
+      - name: Install dependencies
+        run: opam install -y --deps-only -t . -j 4
+
+      - name: Build
+        run: just build
+
+      - name: Test
+        run: just test
