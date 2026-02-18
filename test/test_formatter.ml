@@ -212,19 +212,36 @@ let test_logfmt_fixed_key_order () =
   let fields = [ ("z", Value.Bool true) ] in
   let entry = make_entry ~fields "ev" in
   let result = Formatter.logfmt entry in
-  let ts_pos = ref (-1) and level_pos = ref (-1) and msg_pos = ref (-1) in
-  String.iteri
-    (fun i c ->
-      if !ts_pos = -1 && c = 't' then ts_pos := i;
-      if !level_pos = -1 && c = 'l' then level_pos := i;
-      if !msg_pos = -1 && c = 'm' then msg_pos := i)
-    result;
-  let _ = result in
-  (* Simpler: just check known prefix *)
   let prefix = Printf.sprintf "ts=%s level=info msg=ev" epoch_str in
   let actual_prefix = String.sub result 0 (String.length prefix) in
-  ignore (!ts_pos, !level_pos, !msg_pos);
   Alcotest.(check string) "fixed key prefix" prefix actual_prefix
+
+let test_logfmt_bool_field () =
+  (* Bool values must be rendered unquoted as "true" or "false". *)
+  let fields = [ ("flag", Value.Bool true) ] in
+  let entry = make_entry ~fields "ev" in
+  let result = Formatter.logfmt entry in
+  let expected =
+    Printf.sprintf "ts=%s level=info msg=ev flag=true\n" epoch_str
+  in
+  Alcotest.(check string) "logfmt bool field unquoted" expected result
+
+let test_logfmt_null_field () =
+  (* Null must render as the unquoted string "null". *)
+  let fields = [ ("x", Value.Null) ] in
+  let entry = make_entry ~fields "ev" in
+  let result = Formatter.logfmt entry in
+  let expected = Printf.sprintf "ts=%s level=info msg=ev x=null\n" epoch_str in
+  Alcotest.(check string) "logfmt null field" expected result
+
+let test_logfmt_with_float_field () =
+  let fields = [ ("ratio", Value.Float 2.5) ] in
+  let entry = make_entry ~fields "stat" in
+  let result = Formatter.logfmt entry in
+  let expected =
+    Printf.sprintf "ts=%s level=info msg=stat ratio=2.5\n" epoch_str
+  in
+  Alcotest.(check string) "logfmt float field" expected result
 
 (* ── Formatter.text ─────────────────────────────────────────────────────── *)
 
@@ -300,6 +317,9 @@ let () =
             test_logfmt_field_value_with_interior_quote;
           Alcotest.test_case "fixed key order" `Quick
             test_logfmt_fixed_key_order;
+          Alcotest.test_case "bool field unquoted" `Quick test_logfmt_bool_field;
+          Alcotest.test_case "null field" `Quick test_logfmt_null_field;
+          Alcotest.test_case "float field" `Quick test_logfmt_with_float_field;
         ] );
       ( "Formatter.text",
         [

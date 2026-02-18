@@ -50,6 +50,8 @@ let rotated_path path =
    The byte counter persists across calls to track cumulative size. *)
 let file ~env:_ ~formatter ~path ~max_bytes () =
   let name = match Eio.Path.native path with Some s -> s | None -> "<path>" in
+  (* mutable: justified — cumulative byte count must persist across write calls
+     to trigger size-based rotation at the right threshold. *)
   let bytes_written = ref 0 in
   {
     name;
@@ -64,7 +66,11 @@ let file ~env:_ ~formatter ~path ~max_bytes () =
                this batch would meet or exceed max_bytes. *)
             if !bytes_written > 0 && !bytes_written + total >= max_bytes then begin
               (match rotated_path path with
-              | None -> ()
+              | None ->
+                  (* Path cannot be split (no parent directory). Rotation is skipped;
+                   the write will still proceed to the original path. *)
+                  write_fallback_error name
+                    (Failure "rotation skipped: cannot derive rotated path")
               | Some dst -> Eio.Path.rename path dst);
               bytes_written := 0
             end;

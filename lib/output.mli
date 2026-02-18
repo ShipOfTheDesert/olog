@@ -6,7 +6,7 @@
 
     {!t.write} never propagates exceptions — I/O errors are caught and a
     best-effort error line is written to the process stderr. Use {!to_sink} to
-    adapt an {!t} for use with {!Logger.Config.sinks}. *)
+    adapt an {!t} for use with [Logger.Config.sinks]. *)
 
 type t = {
   name : string;
@@ -15,7 +15,7 @@ type t = {
       (** Write a batch of entries to the destination. Must not raise — see
           module documentation. Called by the logger worker fiber. *)
   close : unit -> unit;
-      (** Release underlying resources. Called once at teardown by {!Logger}'s
+      (** Release underlying resources. Called once at teardown by the logger
           worker via {!to_sink}. Must not raise. *)
 }
 (** An output destination — a named pair of write and close functions. *)
@@ -52,8 +52,10 @@ val file :
     name), and a new file is opened at [path]. The byte counter resets after
     each rotation.
 
-    [close ()] is a no-op.
+    [close ()] is a no-op — the per-write-open design holds no persistent file
+    handle. See ADR 0005 for rationale.
 
+    @param env Accepted for API compatibility; not used internally.
     @param max_bytes Must be a positive integer. *)
 
 val http :
@@ -75,7 +77,7 @@ val http :
     no-op. *)
 
 val to_sink : t -> Logger.sink
-(** [to_sink output] adapts [output] for use with {!Logger.Config.sinks}.
+(** [to_sink output] adapts [output] for use with [Logger.Config.sinks].
 
     Mapping:
     - [emit entry] → [output.write [entry]]

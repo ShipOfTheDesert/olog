@@ -14,7 +14,7 @@ val json : t
 
     Fixed keys: ["timestamp"] (ISO 8601 UTC), ["level"] (lower-case),
     ["message"] (string). Each field in {!Entry.fields} appears as an additional
-    top-level key serialised via {!Value.to_yojson}. If {!Entry.src_pos} is
+    top-level key serialised via {!Value.to_yojson}. If [entry.src_pos] is
     [Some p], a ["src_pos"] object with ["file"], ["line"], and ["col"] is
     included. *)
 

@@ -149,6 +149,38 @@ let test_file_name () =
   output.close ();
   Alcotest.(check bool) "name is non-empty" true (String.length output.name > 0)
 
+(* F10: append mode — a second write does not truncate previous content *)
+let test_file_appends_to_existing () =
+  Eio_main.run @@ fun env ->
+  cleanup env "append";
+  let path = tmp_path env "append" in
+  let output =
+    Output.file ~env ~formatter:Formatter.text ~path ~max_bytes:1_000_000 ()
+  in
+  output.write [ make_entry "first" ];
+  output.write [ make_entry "second" ];
+  let content = Eio.Path.load path in
+  cleanup env "append";
+  let has_first =
+    let needle = "first" in
+    let nlen = String.length needle and hlen = String.length content in
+    let rec loop i =
+      i + nlen <= hlen && (String.sub content i nlen = needle || loop (i + 1))
+    in
+    loop 0
+  in
+  let has_second =
+    let needle = "second" in
+    let nlen = String.length needle and hlen = String.length content in
+    let rec loop i =
+      i + nlen <= hlen && (String.sub content i nlen = needle || loop (i + 1))
+    in
+    loop 0
+  in
+  Alcotest.(check bool)
+    "first entry still present after second write" true has_first;
+  Alcotest.(check bool) "second entry present" true has_second
+
 (* F11: rotation renames current file to <path>.1 and opens a fresh file *)
 let test_file_rotation () =
   Eio_main.run @@ fun env ->
@@ -174,6 +206,31 @@ let test_file_rotation () =
   Alcotest.(check bool)
     "new file has content after rotation" true
     (String.length after_second > 0)
+
+(* F11: the rotated file (.1) holds the pre-rotation content *)
+let test_file_rotated_holds_pre_rotation_content () =
+  Eio_main.run @@ fun env ->
+  cleanup env "rotcontent";
+  let path = tmp_path env "rotcontent" in
+  let output =
+    Output.file ~env ~formatter:Formatter.text ~path ~max_bytes:10 ()
+  in
+  output.write [ make_entry "before" ];
+  (* Second write triggers rotation; "before" entry moves to .1 *)
+  output.write [ make_entry "after" ];
+  let rotated_content = Eio.Path.load (rotated_path env "rotcontent") in
+  cleanup env "rotcontent";
+  let has_before =
+    let needle = "before" in
+    let nlen = String.length needle and hlen = String.length rotated_content in
+    let rec loop i =
+      i + nlen <= hlen
+      && (String.sub rotated_content i nlen = needle || loop (i + 1))
+    in
+    loop 0
+  in
+  Alcotest.(check bool)
+    "rotated file contains pre-rotation entry" true has_before
 
 (* F11: byte counter resets after rotation; a third write goes to the new file *)
 let test_file_rotation_counter_resets () =
@@ -314,8 +371,12 @@ let () =
       ( "Output.file",
         [
           Alcotest.test_case "writes to path" `Quick test_file_write;
+          Alcotest.test_case "appends to existing file" `Quick
+            test_file_appends_to_existing;
           Alcotest.test_case "name is path string" `Quick test_file_name;
           Alcotest.test_case "rotates at max_bytes" `Quick test_file_rotation;
+          Alcotest.test_case "rotated file holds pre-rotation content" `Quick
+            test_file_rotated_holds_pre_rotation_content;
           Alcotest.test_case "byte counter resets after rotation" `Quick
             test_file_rotation_counter_resets;
           Alcotest.test_case "close is no-op" `Quick test_file_close_noop;
