@@ -1,3 +1,3 @@
 (tests
- (names test_level test_value test_entry test_context)
+ (names test_level test_value test_entry test_context test_logger)
  (libraries olog alcotest eio_main))
