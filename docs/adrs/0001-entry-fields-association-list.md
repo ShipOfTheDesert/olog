@@ -1,4 +1,4 @@
-# ADR 0002: Use association list for Entry.fields
+# ADR 0001: Use association list for Entry.fields
 
 **Status:** Accepted
 **Date:** 2026-02-17

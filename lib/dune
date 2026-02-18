@@ -1,4 +1,4 @@
 (library
  (name olog)
  (public_name olog)
- (libraries ptime yojson))
+ (libraries eio ptime yojson))
