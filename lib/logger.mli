@@ -7,7 +7,7 @@
     If the queue is full, entries are dropped and counted — callers are never
     suspended.
 
-    The worker's lifetime is tied to the {!Eio.Switch.t} passed to {!create}; it
+    The worker's lifetime is tied to the [Eio.Switch.t] passed to {!create}; it
     terminates automatically when the switch closes. *)
 
 type sink = {
@@ -16,7 +16,7 @@ type sink = {
           this raises, the worker catches the exception and continues. *)
   flush : unit -> unit;
       (** Flush any buffered output. Called after all preceding entries have
-          been emitted when {!flush} is invoked on the logger. *)
+          been emitted when {!val:flush} is invoked on the logger. *)
   close : unit -> unit;
       (** Release resources. Called once when the switch closes. Exceptions are
           caught and ignored. *)
@@ -66,7 +66,7 @@ val create :
     @param sw The enclosing switch. The worker is tied to this lifetime.
     @param clock Eio realtime clock used to timestamp each entry at call time.
     @param config Logger configuration (level, queue depth, sinks).
-    @param name Human-readable identifier, used in {!diagnostics}. *)
+    @param name Human-readable identifier, used in {!val:diagnostics}. *)
 
 val is_enabled : t -> Level.t -> bool
 (** [is_enabled logger level] returns [true] iff [level] is at or above the
