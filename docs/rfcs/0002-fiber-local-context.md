@@ -127,13 +127,17 @@ val with_context : fields:(string * Value.t) list -> (unit -> 'a) -> 'a
 
 ## Options Considered
 
-### Option A: Module-level `fiber_key` — chosen
+### Option A: Module-level `fiber_key` — superseded by ADR 0002
 
 Create `let fiber_key : t Eio.Fiber.key = Eio.Fiber.create_key ()` once at module initialization.
 
 **Pros:** No allocation per `with_context` call. Deterministic: all calls share one key. Simple to reason about. `Eio.Fiber.create_key` is a pure allocation requiring no active scheduler — safe at module init time.
 
 **Cons:** Module initialization order matters in OCaml. In practice this is a non-issue: the key is a plain heap allocation and `Context` has no circular dependencies.
+
+**Superseded:** `Eio.Fiber.with_binding` was found to propagate bindings to
+child fibers at fork time, violating F7. The implementation uses raw OCaml 5
+effects instead. See ADR 0002.
 
 ### Option B: Domain-local storage (`Domain.DLS`)
 
