@@ -4,7 +4,7 @@
 |-------------|------------------------------------|
 | **RFC**     | 0002                               |
 | **Title**   | Fiber-Local Context Propagation    |
-| **Status**  | Draft                              |
+| **Status**  | Accepted                           |
 | **Created** | 2026-02-17                         |
 | **Session** | 2                                  |
 
@@ -12,7 +12,9 @@
 
 ## Summary
 
-Introduce `Context`, an Eio-backed fiber-local storage module that associates structured logging fields with the current fiber without requiring callers to thread context through every function argument. A single module-level `Eio.Fiber.key` is created at module load time; `with_context` binds additional fields for the duration of a callback; `current` retrieves the accumulated fields for the current fiber.
+Introduce `Context`, a module that associates structured logging fields with the current fiber without requiring callers to thread context through every function argument. `with_context` installs a dynamic-scope OCaml 5 effect handler that binds additional fields for the duration of a callback; `current` retrieves the accumulated fields anywhere in that continuation. Context is isolated between fibers by default: forked fibers run fresh continuations that do not inherit the parent's effect handler.
+
+> **Implementation note:** The RFC originally specified `Eio.Fiber.create_key` / `Eio.Fiber.with_binding` as the storage mechanism. During implementation, `Eio.Fiber.with_binding` was found to propagate bindings to child fibers at fork time, violating F7. The implementation therefore uses raw OCaml 5 effects instead. See ADR 0002 for the full rationale.
 
 ---
 

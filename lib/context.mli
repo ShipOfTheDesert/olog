@@ -1,9 +1,9 @@
 (** Fiber-local context for structured logging fields.
 
-    A single fiber-local key stores an association list of [(string * Value.t)]
-    pairs scoped to the current fiber. Use {!with_context} to add fields for the
-    duration of a callback and {!current} to retrieve the accumulated fields in
-    the current fiber.
+    A dynamic-scope effect handler stores an association list of
+    [(string * Value.t)] pairs for the duration of a {!with_context} callback.
+    Use {!with_context} to add fields for the duration of a callback and
+    {!current} to retrieve the accumulated fields anywhere in that scope.
 
     Context is isolated between fibers: a fiber forked inside [with_context]
     starts with an empty context. *)

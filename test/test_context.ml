@@ -2,6 +2,11 @@
 let test_empty_is_empty_list () =
   Alcotest.(check bool) "empty is []" true (Olog.Context.empty = [])
 
+(* F3: current () outside any Eio context or with_context scope returns empty *)
+let test_current_outside_eio () =
+  let ctx = Olog.Context.current () in
+  Alcotest.(check bool) "outside Eio returns empty" true (ctx = [])
+
 (* F3 *)
 let test_current_no_binding () =
   Eio_main.run @@ fun _ ->
@@ -119,6 +124,8 @@ let () =
         ] );
       ( "current",
         [
+          Alcotest.test_case "returns empty outside any Eio context" `Quick
+            test_current_outside_eio;
           Alcotest.test_case "returns empty when no binding set" `Quick
             test_current_no_binding;
           Alcotest.test_case "returns fields inside with_context" `Quick
