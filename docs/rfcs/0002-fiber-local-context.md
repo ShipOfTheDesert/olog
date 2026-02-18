@@ -172,7 +172,7 @@ When Eio forks a child fiber, copy the parent's context bindings automatically.
 | Risk | Impact | Mitigation |
 |------|--------|------------|
 | `Eio.Fiber` API changes between versions | Compilation failure | Pin `eio >= 1.0`; isolate Eio calls in `Context` implementation only |
-| Calling `current ()` outside an Eio context raises `Effect.Unhandled` | Runtime error | Document the Eio-context requirement; all integration tests use `Eio_main.run` |
+| `current ()` called outside any `with_context` scope (including from a forked fiber or outside any scheduler) | Returns `empty` | `Effect.Unhandled` is caught internally; `test_current_outside_eio` verifies this is safe |
 | Upsert merge on large field lists is O(n²) | Slow for pathological inputs | Log context fields are bounded in practice (< 20 entries); acceptable per NF4 |
 
 ---
