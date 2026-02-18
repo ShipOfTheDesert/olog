@@ -14,6 +14,8 @@
 
 Introduce `Logger`, the async emission core of olog. `Logger.t` is an opaque handle over a name, configuration, a bounded `Eio.Stream.t` queue, and an atomic drop counter. `Logger.create` forks a worker daemon fiber under a caller-supplied switch; the worker drains the queue, dispatching each `Entry.t` to a list of output sinks in order. `Logger.log` guards `Entry.t` construction behind a synchronous level check — zero allocation when the level is below the filter — stamps the entry from the injected clock, and enqueues it non-blocking (dropping if the queue is full). Drops are counted atomically. `Logger.diagnostics` exposes queue depth, capacity, and drop count as a structured value.
 
+**Implementation note:** The `clock` parameter in the shipped `.mli` uses `_ Eio.Time.clock` rather than the `[> Eio.Time.clock_ty] Eio.Resource.t` form shown in §Public Interface below; these are type-equivalent in Eio. The clock is stored internally as a `unit -> Ptime.t` closure — see ADR 0003.
+
 ---
 
 ## Motivation
