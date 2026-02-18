@@ -3,4 +3,4 @@
  (public_name olog)
  ; eio: Context uses Effect.Deep.match_with which interacts with the Eio
  ; scheduler; future Sink and Logger modules will use Eio.Stream / Eio.Flow.
- (libraries eio ptime yojson))
+ (libraries eio ptime yojson cohttp-eio))

@@ -1,3 +1,10 @@
 (tests
- (names test_level test_value test_entry test_context test_logger)
- (libraries olog alcotest eio_main))
+ (names
+  test_level
+  test_value
+  test_entry
+  test_context
+  test_logger
+  test_formatter
+  test_output)
+ (libraries olog alcotest eio_main yojson cohttp-eio))
