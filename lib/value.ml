@@ -1,5 +1,12 @@
 type t = String of string | Int of int | Float of float | Bool of bool | Null
 
+let to_string = function
+  | String s -> s
+  | Int n -> string_of_int n
+  | Float f -> Printf.sprintf "%g" f
+  | Bool b -> string_of_bool b
+  | Null -> "null"
+
 let to_yojson = function
   | String s -> `String s
   | Int n -> `Int n

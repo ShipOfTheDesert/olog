@@ -1,6 +1,6 @@
 (library
  (name olog)
  (public_name olog)
- ; eio: Context uses Effect.Deep.match_with which interacts with the Eio
- ; scheduler; future Sink and Logger modules will use Eio.Stream / Eio.Flow.
- (libraries eio ptime yojson))
+ ; eio: Context uses Effect.Deep.match_with; Logger uses Eio.Stream / Eio.Flow.
+ ; cohttp-eio: Output.http sends batched HTTP POST requests.
+ (libraries eio ptime yojson cohttp-eio))
