@@ -27,7 +27,12 @@
 
     {[
       [%log.info logger "server started" [ ("request_id", "abc") ]]
-    ]} *)
+    ]}
+
+    Note: [Context.with_context] fields are not yet automatically merged into
+    log entries — context wiring in [Logger.log] is deferred to a future
+    release. Until then, context fields must be passed explicitly via [~fields].
+*)
 
 module Level : module type of Level
 (** Log severity levels — [Trace | Debug | Info | Warn | Error | Fatal]. *)
