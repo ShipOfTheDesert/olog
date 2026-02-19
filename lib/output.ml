@@ -81,40 +81,6 @@ let file ~env:_ ~formatter ~path ~max_bytes () =
     close = (fun () -> ());
   }
 
-(* ── Output.http ─────────────────────────────────────────────────────────── *)
-
-let http ~net ~formatter ~uri ?headers () =
-  let name = "http:" ^ uri in
-  let parsed_uri = Uri.of_string uri in
-  let client = Cohttp_eio.Client.make ~https:None net in
-  let base_headers =
-    Http.Header.of_list [ ("Content-Type", "text/plain; charset=utf-8") ]
-  in
-  let all_headers =
-    match headers with
-    | None -> base_headers
-    | Some h -> Http.Header.add_list base_headers h
-  in
-  {
-    name;
-    write =
-      (fun entries ->
-        protect name (fun () ->
-            let body_str = String.concat "" (List.map formatter entries) in
-            let body = Cohttp_eio.Body.of_string body_str in
-            Eio.Switch.run @@ fun sw ->
-            let resp, _resp_body =
-              Cohttp_eio.Client.post client ~sw ~body ~headers:all_headers
-                parsed_uri
-            in
-            let code = Http.Status.to_int (Http.Response.status resp) in
-            if code / 100 <> 2 then
-              failwith
-                (Printf.sprintf "HTTP %s"
-                   (Http.Status.to_string (Http.Response.status resp)))));
-    close = (fun () -> ());
-  }
-
 (* ── Output.to_sink ──────────────────────────────────────────────────────── *)
 
 let to_sink output =

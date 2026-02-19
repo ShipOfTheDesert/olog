@@ -1,5 +1,5 @@
 (* test/test_output.ml
-   Integration tests for Output.{make,stdout,stderr,file,http,to_sink}.
+   Integration tests for Output.{make,stdout,stderr,file,to_sink}.
 
    Pure tests (no Eio scheduler) use Eio.Flow.buffer_sink.
    NF9: Output.file tests use Eio_main.run with a real temp directory from env. *)
@@ -276,32 +276,7 @@ let test_file_write_error_safety () =
   in
   output.write [ make_entry "msg" ]
 
-(* ── Group 5: Output.http ───────────────────────────────────────────────── *)
-
-(* F13: http creates an output with a non-empty name *)
-let test_http_name () =
-  Eio_main.run @@ fun env ->
-  let uri = "http://127.0.0.1:1/" in
-  let output = Output.http ~net:env#net ~formatter:Formatter.text ~uri () in
-  Alcotest.(check bool) "name is non-empty" true (String.length output.name > 0)
-
-(* F14: write to an unreachable server does not raise (error goes to fallback) *)
-let test_http_error_safety () =
-  Eio_main.run @@ fun env ->
-  let uri = "http://127.0.0.1:1/" in
-  let output = Output.http ~net:env#net ~formatter:Formatter.text ~uri () in
-  output.write [ make_entry "msg" ]
-
-(* F13: http close is a no-op *)
-let test_http_close_noop () =
-  Eio_main.run @@ fun env ->
-  let output =
-    Output.http ~net:env#net ~formatter:Formatter.text
-      ~uri:"http://127.0.0.1:1/" ()
-  in
-  output.close ()
-
-(* ── Group 6: Output.to_sink ────────────────────────────────────────────── *)
+(* ── Group 5: Output.to_sink ────────────────────────────────────────────── *)
 
 (* F15: emit calls output.write with a singleton list *)
 let test_to_sink_emit () =
@@ -382,13 +357,6 @@ let () =
           Alcotest.test_case "close is no-op" `Quick test_file_close_noop;
           Alcotest.test_case "write does not propagate exceptions" `Quick
             test_file_write_error_safety;
-        ] );
-      ( "Output.http",
-        [
-          Alcotest.test_case "name is non-empty" `Quick test_http_name;
-          Alcotest.test_case "write does not propagate on failure" `Quick
-            test_http_error_safety;
-          Alcotest.test_case "close is no-op" `Quick test_http_close_noop;
         ] );
       ( "Output.to_sink",
         [
