@@ -14,3 +14,11 @@
  (libraries olog alcotest eio_main)
  (preprocess
   (pps olog_ppx)))
+
+(executable
+ (name run_ppx_driver)
+ (modules run_ppx_driver)
+ (libraries ppxlib olog_ppx))
+
+(cram
+ (deps run_ppx_driver.exe))

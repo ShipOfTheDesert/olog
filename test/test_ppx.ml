@@ -96,6 +96,54 @@ let test_is_enabled_guard_skips () =
   Logger.flush logger;
   Alcotest.(check int) "no entries" 0 (List.length !entries)
 
+let test_literal_float_wrapped () =
+  with_test_logger Level.Info @@ fun logger entries ->
+  [%log.info logger "data" [ ("pi", 3.14) ]];
+  Logger.flush logger;
+  let entry = List.hd (List.rev !entries) in
+  Alcotest.(check bool)
+    "has float field" true
+    (List.mem ("pi", Value.Float 3.14) entry.Entry.fields)
+
+let test_backtick_float_wrapped () =
+  with_test_logger Level.Info @@ fun logger entries ->
+  let t = 2.72 in
+  [%log.info logger "data" [ ("x", `Float t) ]];
+  Logger.flush logger;
+  let entry = List.hd (List.rev !entries) in
+  Alcotest.(check bool)
+    "has float field" true
+    (List.mem ("x", Value.Float 2.72) entry.Entry.fields)
+
+let test_backtick_string_wrapped () =
+  with_test_logger Level.Info @@ fun logger entries ->
+  let v = "abc" in
+  [%log.info logger "data" [ ("s", `String v) ]];
+  Logger.flush logger;
+  let entry = List.hd (List.rev !entries) in
+  Alcotest.(check bool)
+    "has string field" true
+    (List.mem ("s", Value.String "abc") entry.Entry.fields)
+
+let test_backtick_bool_wrapped () =
+  with_test_logger Level.Info @@ fun logger entries ->
+  let b = true in
+  [%log.info logger "data" [ ("ok", `Bool b) ]];
+  Logger.flush logger;
+  let entry = List.hd (List.rev !entries) in
+  Alcotest.(check bool)
+    "has bool field" true
+    (List.mem ("ok", Value.Bool true) entry.Entry.fields)
+
+let test_backtick_null_wrapped () =
+  with_test_logger Level.Info @@ fun logger entries ->
+  [%log.info logger "data" [ ("k", `Null) ]];
+  Logger.flush logger;
+  let entry = List.hd (List.rev !entries) in
+  Alcotest.(check bool)
+    "has null field" true
+    (List.mem ("k", Value.Null) entry.Entry.fields)
+
 let () =
   Alcotest.run "ppx"
     [
@@ -117,5 +165,15 @@ let () =
             test_no_fields_form_empty_fields;
           Alcotest.test_case "is_enabled guard skips log below min_level" `Quick
             test_is_enabled_guard_skips;
+          Alcotest.test_case "literal float 3.14 auto-wrapped to Value.Float"
+            `Quick test_literal_float_wrapped;
+          Alcotest.test_case "backtick Float wraps expression" `Quick
+            test_backtick_float_wrapped;
+          Alcotest.test_case "backtick String wraps expression" `Quick
+            test_backtick_string_wrapped;
+          Alcotest.test_case "backtick Bool wraps expression" `Quick
+            test_backtick_bool_wrapped;
+          Alcotest.test_case "backtick Null wraps to Value.Null" `Quick
+            test_backtick_null_wrapped;
         ] );
     ]
