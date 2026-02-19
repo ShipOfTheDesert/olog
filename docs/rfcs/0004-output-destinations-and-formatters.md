@@ -4,7 +4,7 @@
 |-------------|--------------------------------------------|
 | **RFC**     | 0004                                       |
 | **Title**   | Output Destinations and Formatters         |
-| **Status**  | Implemented                                |
+| **Status**  | Accepted                                   |
 | **Created** | 2026-02-18                                 |
 | **Session** | 4                                          |
 

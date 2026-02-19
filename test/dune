@@ -6,7 +6,8 @@
   test_context
   test_logger
   test_formatter
-  test_output)
+  test_output
+  test_log_exn)
  (libraries olog alcotest eio_main yojson))
 
 (test

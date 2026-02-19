@@ -144,6 +144,98 @@ let test_backtick_null_wrapped () =
     "has null field" true
     (List.mem ("k", Value.Null) entry.Entry.fields)
 
+(* ── PPX _exn tests ──────────────────────────────────────────────────────── *)
+
+let test_ppx_exn_3_arg_emits_exn_fields () =
+  with_test_logger Level.Trace @@ fun logger entries ->
+  let exn = Failure "test" in
+  [%log.error_exn logger exn "error occurred"];
+  Logger.flush logger;
+  let entry = List.hd (List.rev !entries) in
+  Alcotest.(check bool)
+    "has exn.name" true
+    (List.mem ("exn.name", Value.String "Failure") entry.Entry.fields);
+  Alcotest.(check bool)
+    "has exn.message" true
+    (List.exists (fun (k, _) -> k = "exn.message") entry.Entry.fields);
+  Alcotest.(check bool)
+    "has exn.backtrace" true
+    (List.exists (fun (k, _) -> k = "exn.backtrace") entry.Entry.fields)
+
+let test_ppx_exn_4_arg_merges_user_fields () =
+  with_test_logger Level.Trace @@ fun logger entries ->
+  let exn = Failure "test" in
+  [%log.error_exn logger exn "error occurred" [ ("k", 1) ]];
+  Logger.flush logger;
+  let entry = List.hd (List.rev !entries) in
+  Alcotest.(check bool)
+    "has user field" true
+    (List.mem ("k", Value.Int 1) entry.Entry.fields);
+  Alcotest.(check bool)
+    "has exn.name" true
+    (List.mem ("exn.name", Value.String "Failure") entry.Entry.fields)
+
+let test_ppx_exn_warn_extension_exists () =
+  with_test_logger Level.Trace @@ fun logger entries ->
+  let exn = Failure "test" in
+  [%log.warn_exn logger exn "warning"];
+  Logger.flush logger;
+  let entry = List.hd (List.rev !entries) in
+  Alcotest.(check bool)
+    "level is Warn" true
+    (Level.equal Level.Warn entry.Entry.level)
+
+let test_ppx_exn_is_enabled_guard_skips () =
+  with_test_logger Level.Error @@ fun logger entries ->
+  let exn = Failure "test" in
+  [%log.debug_exn logger exn "should be skipped"];
+  Logger.flush logger;
+  Alcotest.(check int) "no entries" 0 (List.length !entries)
+
+let test_ppx_exn_trace_extension_exists () =
+  with_test_logger Level.Trace @@ fun logger entries ->
+  let exn = Failure "test" in
+  [%log.trace_exn logger exn "tracing"];
+  Logger.flush logger;
+  let entry = List.hd (List.rev !entries) in
+  Alcotest.(check bool)
+    "level is Trace" true
+    (Level.equal Level.Trace entry.Entry.level)
+
+let test_ppx_exn_info_extension_exists () =
+  with_test_logger Level.Trace @@ fun logger entries ->
+  let exn = Failure "test" in
+  [%log.info_exn logger exn "info"];
+  Logger.flush logger;
+  let entry = List.hd (List.rev !entries) in
+  Alcotest.(check bool)
+    "level is Info" true
+    (Level.equal Level.Info entry.Entry.level)
+
+let test_ppx_exn_fatal_extension_exists () =
+  with_test_logger Level.Trace @@ fun logger entries ->
+  let exn = Failure "test" in
+  [%log.fatal_exn logger exn "fatal"];
+  Logger.flush logger;
+  let entry = List.hd (List.rev !entries) in
+  Alcotest.(check bool)
+    "level is Fatal" true
+    (Level.equal Level.Fatal entry.Entry.level)
+
+let test_ppx_exn_captures_src_pos () =
+  with_test_logger Level.Trace @@ fun logger entries ->
+  let exn = Failure "test" in
+  [%log.error_exn logger exn "error"];
+  Logger.flush logger;
+  let entry = List.hd (List.rev !entries) in
+  match entry.Entry.src_pos with
+  | None -> Alcotest.fail "expected src_pos Some"
+  | Some p ->
+      Alcotest.(check string)
+        "file basename" "test_ppx.ml"
+        (Filename.basename p.Entry.file);
+      Alcotest.(check bool) "line > 0" true (p.Entry.line > 0)
+
 let () =
   Alcotest.run "ppx"
     [
@@ -175,5 +267,25 @@ let () =
             test_backtick_bool_wrapped;
           Alcotest.test_case "backtick Null wraps to Value.Null" `Quick
             test_backtick_null_wrapped;
+        ] );
+      ( "ppx_exn",
+        [
+          Alcotest.test_case
+            "[%log.error_exn] 3-arg form emits entry with exn fields" `Quick
+            test_ppx_exn_3_arg_emits_exn_fields;
+          Alcotest.test_case "[%log.error_exn] 4-arg form merges user fields"
+            `Quick test_ppx_exn_4_arg_merges_user_fields;
+          Alcotest.test_case "[%log.warn_exn] extension exists" `Quick
+            test_ppx_exn_warn_extension_exists;
+          Alcotest.test_case "[%log.trace_exn] extension exists" `Quick
+            test_ppx_exn_trace_extension_exists;
+          Alcotest.test_case "[%log.info_exn] extension exists" `Quick
+            test_ppx_exn_info_extension_exists;
+          Alcotest.test_case "[%log.fatal_exn] extension exists" `Quick
+            test_ppx_exn_fatal_extension_exists;
+          Alcotest.test_case "[%log.debug_exn] is_enabled guard skips" `Quick
+            test_ppx_exn_is_enabled_guard_skips;
+          Alcotest.test_case "[%log.error_exn] captures src_pos" `Quick
+            test_ppx_exn_captures_src_pos;
         ] );
     ]

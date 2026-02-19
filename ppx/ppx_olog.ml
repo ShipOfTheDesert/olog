@@ -164,6 +164,131 @@ let make_extension level_name =
     Ast_pattern.(single_expr_payload __)
     (fun ~loc ~path:_ payload -> expand_log ~loc ~level:level_name payload)
 
+(* ── Exception-logging expansion ─────────────────────────────────────────── *)
+
+(* Build a Longident for stdlib Printexc functions — NOT rooted at Olog. *)
+let printexc_lid ~loc name = { txt = Ldot (Lident "Printexc", name); loc }
+
+(* Expand [%log.LEVEL_exn logger_expr exn_expr "message"]
+         [%log.LEVEL_exn logger_expr exn_expr "message" fields_expr]
+   into:
+     (let __olog_l = logger_expr in
+      if Olog.Logger.is_enabled __olog_l Olog.Level.LEVEL then
+        let __olog_bt =
+          if Printexc.backtrace_status () then Printexc.get_raw_backtrace ()
+          else Printexc.get_callstack 0
+        in
+        Olog.Logger.log_exn __olog_l
+          ~level:Olog.Level.LEVEL
+          exn_expr __olog_bt
+          ~fields:fields_expr
+          ~src_pos:{ Olog.Entry.file = F; line = L; col = C }
+          "message") *)
+let expand_log_exn ~loc ~level payload =
+  let logger_expr, exn_expr, msg, fields_opt =
+    match payload.pexp_desc with
+    | Pexp_apply (logger_expr, [ (Nolabel, exn_expr); (Nolabel, msg_expr) ])
+      -> (
+        match msg_expr.pexp_desc with
+        | Pexp_constant (Pconst_string (msg, _, _)) ->
+            (logger_expr, exn_expr, msg, None)
+        | _ ->
+            Location.raise_errorf ~loc
+              "[log.%s_exn]: the third argument must be a string literal" level)
+    | Pexp_apply
+        ( logger_expr,
+          [ (Nolabel, exn_expr); (Nolabel, msg_expr); (Nolabel, fields_expr) ]
+        ) -> (
+        match msg_expr.pexp_desc with
+        | Pexp_constant (Pconst_string (msg, _, _)) ->
+            (logger_expr, exn_expr, msg, Some fields_expr)
+        | _ ->
+            Location.raise_errorf ~loc
+              "[log.%s_exn]: the third argument must be a string literal" level)
+    | _ ->
+        Location.raise_errorf ~loc
+          "[log.%s_exn]: expected `logger exn \"msg\"` or `logger exn \"msg\" \
+           [fields]`"
+          level
+  in
+  let variant = level_variant level in
+  let level_expr =
+    B.pexp_construct ~loc (olog_lid ~loc [ "Level"; variant ]) None
+  in
+  let col = loc.loc_start.pos_cnum - loc.loc_start.pos_bol in
+  let src_pos_expr =
+    B.pexp_record ~loc
+      [
+        ( olog_lid ~loc [ "Entry"; "file" ],
+          B.estring ~loc loc.loc_start.pos_fname );
+        (olog_lid ~loc [ "Entry"; "line" ], B.eint ~loc loc.loc_start.pos_lnum);
+        (olog_lid ~loc [ "Entry"; "col" ], B.eint ~loc col);
+      ]
+      None
+  in
+  let fields_expr =
+    match fields_opt with
+    | None -> B.elist ~loc []
+    | Some f -> wrap_fields_list ~loc f
+  in
+  (* Backtrace conditional:
+     if Printexc.backtrace_status () then Printexc.get_raw_backtrace ()
+     else Printexc.get_callstack 0 *)
+  let bt_expr =
+    B.pexp_ifthenelse ~loc
+      (B.eapply ~loc
+         (B.pexp_ident ~loc (printexc_lid ~loc "backtrace_status"))
+         [ B.eunit ~loc ])
+      (B.eapply ~loc
+         (B.pexp_ident ~loc (printexc_lid ~loc "get_raw_backtrace"))
+         [ B.eunit ~loc ])
+      (Some
+         (B.eapply ~loc
+            (B.pexp_ident ~loc (printexc_lid ~loc "get_callstack"))
+            [ B.eint ~loc 0 ]))
+  in
+  (* Olog.Logger.log_exn __olog_l ~level:... exn_expr __olog_bt
+       ~fields:... ~src_pos:... "msg" *)
+  let log_call =
+    B.pexp_apply ~loc
+      (B.pexp_ident ~loc (olog_lid ~loc [ "Logger"; "log_exn" ]))
+      [
+        (Nolabel, B.evar ~loc "__olog_l");
+        (Labelled "level", level_expr);
+        (Nolabel, exn_expr);
+        (Nolabel, B.evar ~loc "__olog_bt");
+        (Labelled "fields", fields_expr);
+        (Labelled "src_pos", src_pos_expr);
+        (Nolabel, B.estring ~loc msg);
+      ]
+  in
+  let is_enabled_call =
+    B.eapply ~loc
+      (B.pexp_ident ~loc (olog_lid ~loc [ "Logger"; "is_enabled" ]))
+      [ B.evar ~loc "__olog_l"; level_expr ]
+  in
+  (* let __olog_bt = bt_expr in log_call *)
+  let bt_binding =
+    B.value_binding ~loc
+      ~pat:(B.ppat_var ~loc { txt = "__olog_bt"; loc })
+      ~expr:bt_expr
+  in
+  let body = B.pexp_let ~loc Nonrecursive [ bt_binding ] log_call in
+  let if_expr = B.pexp_ifthenelse ~loc is_enabled_call body None in
+  let logger_binding =
+    B.value_binding ~loc
+      ~pat:(B.ppat_var ~loc { txt = "__olog_l"; loc })
+      ~expr:logger_expr
+  in
+  B.pexp_let ~loc Nonrecursive [ logger_binding ] if_expr
+
+let make_extension_exn level_name =
+  Extension.declare
+    ("log." ^ level_name ^ "_exn")
+    Extension.Context.expression
+    Ast_pattern.(single_expr_payload __)
+    (fun ~loc ~path:_ payload -> expand_log_exn ~loc ~level:level_name payload)
+
 let () =
   Driver.register_transformation "olog_ppx"
     ~extensions:
@@ -174,4 +299,10 @@ let () =
         make_extension "warn";
         make_extension "error";
         make_extension "fatal";
+        make_extension_exn "trace";
+        make_extension_exn "debug";
+        make_extension_exn "info";
+        make_extension_exn "warn";
+        make_extension_exn "error";
+        make_extension_exn "fatal";
       ]

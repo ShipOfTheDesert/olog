@@ -14,78 +14,17 @@ use until these are complete.
 
 ### Remove HTTP Output Destination
 
-The current `Output.http` implementation is incomplete: it opens a new TCP
-connection per write with no pooling, no retry, no backoff, and no circuit
-breaker. It also makes `cohttp-eio` a mandatory runtime dependency of the core
-`olog` package, inflating the dependency footprint for users who only need
-stdout or file output. Removing it now, before any public release, is cheaper
-than supporting it.
-
-**Tradeoffs and things to consider:**
-- Remove `Output.http`, `Output.Http_config`, and all references in `lib/output.ml` and `lib/output.mli`.
-- Remove `cohttp-eio` from `lib/dune`, the `olog` package `depends` in `dune-project`, and `olog.opam`.
-- Remove the corresponding test cases in `test/test_output.ml`.
-- A proper HTTP sink belongs in a separate `olog-http` package (Tier 2), keeping
-  the core library dependency-light. Users who need HTTP output can opt in.
-- Consider whether the `sink` record-of-functions interface is sufficient for a
-  future `olog-http` package, or whether a richer lifecycle API is needed first
-  (see Graceful Shutdown below).
-
----
+Implemented: docs/rfcs/0006-remove-http-output.md
 
 ### PPX Test Coverage: Float, Null, and Compile-Error Negative Tests
 
-`Value.Float` literal auto-wrapping and the `` `Null `` backtick shorthand are
-implemented in `ppx/ppx_olog.ml` but have no test cases. Additionally, there
-are no negative tests verifying that malformed PPX payloads (wrong arity,
-non-string message literal) produce a clear, actionable compile error rather
-than a cryptic location error from ppxlib's internals.
-
-**Tradeoffs and things to consider:**
-- Float wrapping: straightforward to add alongside the existing `test_literal_*`
-  pattern; the main subtlety is that `Value.Float 3.14` equality must use
-  `Float.equal` or `Alcotest.float` rather than structural `=` to avoid
-  floating-point comparison surprises.
-- `` `Null `` wrapping: unlike other backtick forms, `Null` takes no argument;
-  the test must verify that the field `("k", Value.Null)` is emitted.
-- Negative compile-error tests require a different mechanism — ppxlib error
-  expansion cannot be tested via `Alcotest` at runtime. Options: use `dune`'s
-  `(rule (action (run ocamlfind ...)) (expected ...))` to snapshot expected
-  compiler output, or use `ppxlib`'s own test infrastructure
-  (`ppxlib.metaquot`, `ppx_expect`). Decide which approach fits the project's
-  existing test discipline before writing.
-- Keep negative tests in a separate file (`test/test_ppx_errors.ml`) so they
-  can be excluded from normal `dune test` if the snapshotting approach requires
-  a separate driver.
+Implemented: docs/rfcs/0007-ppx-test-coverage.md
 
 ---
 
 ### Structured Error and Exception Capture
 
-There is no `Logger.error_exn` or equivalent that captures an OCaml exception's
-backtrace and attaches it as structured fields. The current workaround,
-`~fields:[("exn", Value.String (Printexc.to_string e))]`, loses the backtrace
-and produces an unindexed string blob that cannot be queried or alerted on. For
-a logging library to be useful in practice, exception logging must be a
-first-class operation.
-
-**Tradeoffs and things to consider:**
-- Decide on the structured field schema: at minimum `exn_type` (module path of
-  the exception), `exn_msg` (human message), and `backtrace` (raw string or
-  array of frames). Adding backtrace as an array aligns with JSON log aggregators
-  (Loki, Elasticsearch) but requires a new `Value.Array` constructor — a
-  breaking change to `Value.t`.
-- Alternatively, `backtrace` as a newline-separated `Value.String` avoids
-  extending `Value.t` but is harder to query. Document this trade-off
-  explicitly in the RFC.
-- A PPX extension `[%log.error_exn logger e "msg"]` would be the ergonomic
-  entry point; the PPX expansion should call `Printexc.get_backtrace ()` at the
-  call site (in the calling fiber, before the exception is re-raised or the
-  stack unwinds) — not inside the worker.
-- `Printexc.get_backtrace ()` returns an empty string unless `OCAMLRUNPARAM=b`
-  is set. The implementation should document this and consider calling
-  `Printexc.record_backtrace true` at library init, or requiring the user to
-  set it explicitly.
+Implemented: docs/rfcs/0008-structured-error-and-exception-capture.md
 
 ---
 

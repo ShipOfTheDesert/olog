@@ -73,6 +73,27 @@ let log t ~level ?fields ?src_pos message =
     else Atomic.incr t.drop_count
   end
 
+let log_exn t ~level exn bt ?fields ?src_pos message =
+  if is_enabled t level then begin
+    let exn_fields =
+      [
+        ("exn.name", Value.String (Printexc.exn_slot_name exn));
+        ("exn.message", Value.String (Printexc.to_string exn));
+        ("exn.backtrace", Value.String (Printexc.raw_backtrace_to_string bt));
+      ]
+    in
+    let merged =
+      match fields with None -> exn_fields | Some user -> user @ exn_fields
+    in
+    let timestamp = t.now () in
+    let entry =
+      Entry.create ~level ~message ~fields:merged ?src_pos ~timestamp ()
+    in
+    if Eio.Stream.length t.queue < t.config.queue_depth then
+      Eio.Stream.add t.queue (Log entry)
+    else Atomic.incr t.drop_count
+  end
+
 let flush t =
   let promise, resolver = Eio.Promise.create () in
   (* [add] blocks until space is available — acceptable for a deliberate
