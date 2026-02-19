@@ -8,3 +8,9 @@
   test_formatter
   test_output)
  (libraries olog alcotest eio_main yojson cohttp-eio))
+
+(test
+ (name test_ppx)
+ (libraries olog alcotest eio_main)
+ (preprocess
+  (pps olog_ppx)))

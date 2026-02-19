@@ -1,0 +1,5 @@
+(executables
+ (names basic structured)
+ (libraries olog eio_main)
+ (preprocess
+  (pps olog_ppx)))

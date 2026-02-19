@@ -1,4 +1,5 @@
 (executable
  (public_name olog)
+ (package olog)
  (name main)
  (libraries olog))

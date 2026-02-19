@@ -1,0 +1,5 @@
+(library
+ (name olog_ppx)
+ (public_name olog_ppx)
+ (kind ppx_rewriter)
+ (libraries ppxlib olog))
