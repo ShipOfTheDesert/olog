@@ -36,7 +36,34 @@
    (and
     :with-test
     (>= 1.7)))
-  (ppxlib
-   (>= 0.32))
   (cohttp-eio
    (>= 6.0))))
+
+(package
+ (name olog_ppx)
+ (synopsis "PPX for automatic source-location injection in olog log calls")
+ (description
+  "Provides [%%log.LEVEL] extension points that expand to guarded Logger.log
+   calls with compile-time source location and automatic Value wrapping for
+   literal field values.")
+ (depends
+  (ppxlib
+   (>= 0.32))
+  (olog
+   (= :version))
+  (eio_main
+   (and
+    :with-test
+    (>= 1.0)))
+  (alcotest
+   (and
+    :with-test
+    (>= 1.7)))
+  (yojson
+   (and
+    :with-test
+    (>= 2.1)))
+  (cohttp-eio
+   (and
+    :with-test
+    (>= 6.0)))))
