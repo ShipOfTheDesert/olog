@@ -2,7 +2,7 @@
 
     An {!t} is a named vtable record: a pair of functions for writing batches of
     entries and releasing resources. Built-in constructors cover stdout, stderr,
-    file (size-based rotation), and HTTP (batched POST).
+    and file (size-based rotation).
 
     {!t.write} never propagates exceptions — I/O errors are caught and a
     best-effort error line is written to the process stderr. Use {!to_sink} to
@@ -57,24 +57,6 @@ val file :
 
     @param env Accepted for API compatibility; not used internally.
     @param max_bytes Must be a positive integer. *)
-
-val http :
-  net:_ Eio.Net.t ->
-  formatter:Formatter.t ->
-  uri:string ->
-  ?headers:(string * string) list ->
-  unit ->
-  t
-(** [http ~net ~formatter ~uri ?headers ()] creates an output that POSTs each
-    batch of entries as a single HTTP request.
-
-    The request body is the concatenation of [formatter entry] for each entry in
-    the batch. [Content-Type] is [text/plain; charset=utf-8]. Additional
-    [headers] are appended verbatim.
-
-    On network error or non-2xx response, entries are dropped and the error is
-    reported to fallback stderr per the error-safety contract. [close] is a
-    no-op. *)
 
 val to_sink : t -> Logger.sink
 (** [to_sink output] adapts [output] for use with [Logger.Config.sinks].

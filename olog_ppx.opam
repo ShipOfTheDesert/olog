@@ -17,7 +17,6 @@ depends: [
   "eio_main" {with-test & >= "1.0"}
   "alcotest" {with-test & >= "1.7"}
   "yojson" {with-test & >= "2.1"}
-  "cohttp-eio" {with-test & >= "6.0"}
   "odoc" {with-doc}
 ]
 build: [

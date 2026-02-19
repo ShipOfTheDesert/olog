@@ -35,9 +35,7 @@
   (alcotest
    (and
     :with-test
-    (>= 1.7)))
-  (cohttp-eio
-   (>= 6.0))))
+    (>= 1.7)))))
 
 (package
  (name olog_ppx)
@@ -62,8 +60,4 @@
   (yojson
    (and
     :with-test
-    (>= 2.1)))
-  (cohttp-eio
-   (and
-    :with-test
-    (>= 6.0)))))
+    (>= 2.1)))))

@@ -17,7 +17,6 @@ depends: [
   "ptime" {>= "1.1"}
   "yojson" {>= "2.1"}
   "alcotest" {with-test & >= "1.7"}
-  "cohttp-eio" {>= "6.0"}
   "odoc" {with-doc}
 ]
 build: [
