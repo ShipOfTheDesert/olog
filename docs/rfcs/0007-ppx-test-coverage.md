@@ -4,7 +4,7 @@
 |-------------|----------------------------------------------------------|
 | **RFC**     | 0007                                                     |
 | **Title**   | PPX Test Coverage: Float, Null, and Compile-Error Negative Tests |
-| **Status**  | Draft                                                    |
+| **Status**  | Accepted                                                 |
 | **Created** | 2026-02-19                                               |
 | **Session** | 7                                                        |
 

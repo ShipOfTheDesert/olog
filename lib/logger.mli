@@ -95,6 +95,36 @@ val log :
       Source location, typically injected by a PPX (default [None]).
     @param message Human-readable log message. *)
 
+val log_exn :
+  t ->
+  level:Level.t ->
+  exn ->
+  Printexc.raw_backtrace ->
+  ?fields:(string * Value.t) list ->
+  ?src_pos:Entry.src_pos ->
+  string ->
+  unit
+(** [log_exn t ~level exn bt ?fields ?src_pos msg] logs [msg] at [level] with
+    structured exception fields extracted from [exn] and [bt]:
+
+    - [("exn.name", Value.String (Printexc.exn_slot_name exn))]
+    - [("exn.message", Value.String (Printexc.to_string exn))]
+    - [("exn.backtrace", Value.String (Printexc.raw_backtrace_to_string bt))]
+
+    Exception fields are appended after any user-supplied [~fields] and take
+    precedence on key collision. The [exn.] key prefix is reserved;
+    user-supplied fields with this prefix will be overwritten.
+
+    Like {!log}, this function never raises. If the internal queue is full the
+    entry is dropped and the drop counter is incremented.
+
+    {b Backtrace recording:} [bt] is typically obtained by calling
+    [Printexc.get_raw_backtrace ()] immediately after catching the exception.
+    Backtrace recording must be enabled for this to return a non-empty trace;
+    see [Printexc.record_backtrace]. The PPX extensions [[%log.<level>_exn ...]]
+    handle this automatically, skipping the backtrace call when recording is
+    disabled. *)
+
 val flush : t -> unit
 (** [flush logger] suspends the calling fiber until all entries currently in the
     queue have been processed by the worker and each sink's [flush] function has

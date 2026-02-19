@@ -4,7 +4,7 @@
 |-------------|------------------------------------|
 | **RFC**     | 0003                               |
 | **Title**   | Logger and Async Worker            |
-| **Status**  | Draft                              |
+| **Status**  | Accepted                           |
 | **Created** | 2026-02-18                         |
 | **Session** | 3                                  |
 
