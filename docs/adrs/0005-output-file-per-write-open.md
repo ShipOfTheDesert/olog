@@ -1,6 +1,6 @@
 # ADR 0005: Output.file uses per-write `with_open_out` (no persistent handle)
 
-**Status:** Accepted
+**Status:** Superseded by RFC 0010
 **Date:** 2026-02-18
 **RFC:** docs/rfcs/0004-output-destinations-and-formatters.md
 

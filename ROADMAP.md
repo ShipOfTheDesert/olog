@@ -30,53 +30,13 @@ Implemented: docs/rfcs/0008-structured-error-and-exception-capture.md
 
 ### Context Wiring in Logger
 
-`Logger.log` never reads `Context.current ()`. The fiber-local context
-propagation module is completely inert — fields set via `Context.with_context`
-do not appear in any emitted log entry. This is the most visible correctness gap
-in the library; the `examples/structured.ml` already carries a `(* FUTURE *)`
-comment marking it.
-
-**Tradeoffs and things to consider:**
-- Context must be captured at call-site time in the calling fiber, not inside
-  the async worker. The worker runs in its own fiber where
-  `Context.current ()` would return the empty context. The `Entry.t` must
-  therefore be constructed (including context snapshot) before the entry is
-  enqueued, not after.
-- Merging strategy: when a field key appears in both `~fields` and
-  `Context.current ()`, which wins? Explicit call-site fields should override
-  context fields (call-site is more specific), but this must be documented.
-- Context snapshot is a `(string * Value.t) list` copy. For hot paths with large
-  contexts this is an allocation per log call. Consider whether the context
-  should be stored by reference (unsafe if the context mutates) or always
-  snapshotted (safe, current approach of `Context`).
-- Add regression tests: log inside `Context.with_context`, verify context fields
-  appear in the emitted entry; log outside, verify they don't.
+Implemented: docs/rfcs/0009-context-wiring-in-logger.md
 
 ---
 
 ### Log Rotation and File Sink Lifecycle
 
-`Output.file` reopens the file descriptor on every write using
-`Eio.Path.with_open_out`. This is correct for correctness (no persistent handle
-to leak) but unacceptably slow for high-throughput logging and incompatible with
-log rotation tools (logrotate sends SIGHUP expecting the process to reopen the
-file). There is also no max-size rollover or date-based rotation.
-
-**Tradeoffs and things to consider:**
-- A persistent file handle (opened once in `Output.make`, closed in
-  `sink.close`) requires the caller to pass a `Eio.Switch.t` into
-  `Output.file`, which changes the public API. Evaluate whether this is the
-  right moment to introduce a more explicit lifecycle model.
-- SIGHUP-based reopen: Eio has no built-in POSIX signal handling; wiring signal
-  delivery requires `Eio_unix.signal` or a dedicated signal fiber. Document
-  whether this is in scope for the initial rotation RFC or deferred.
-- Max-size rollover is simpler to implement without signal handling: track bytes
-  written, reopen when a threshold is crossed. But it requires the file sink to
-  maintain mutable state — justified here (`(* mutable: rotation counter *)`).
-- Consider whether rotation belongs in the `sink` or as a wrapper sink
-  (a `rotating_file` sink that delegates to an inner file sink). The wrapper
-  approach composes better but requires the `sink` interface to support
-  `reopen` or similar lifecycle events.
+File output destination was removed: docs/rfcs/0010-remove-file-output-destination.md
 
 ---
 
