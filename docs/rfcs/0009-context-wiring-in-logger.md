@@ -4,7 +4,7 @@
 |-------------|----------------------------------------------------|
 | **RFC**     | 0009                                               |
 | **Title**   | Context Wiring in Logger                           |
-| **Status**  | Draft                                              |
+| **Status**  | Accepted                                           |
 | **Created** | 2026-02-19                                         |
 | **Session** | 9                                                  |
 
