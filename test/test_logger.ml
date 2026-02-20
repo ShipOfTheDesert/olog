@@ -521,6 +521,228 @@ let test_diagnostics_concurrent () =
           done);
       Olog.Logger.flush logger)
 
+(* ── Helpers for context-wiring tests ───────────────────────────────────── *)
+
+let pp_value fmt = function
+  | Olog.Value.String s -> Format.fprintf fmt "String %S" s
+  | Olog.Value.Int i -> Format.fprintf fmt "Int %d" i
+  | Olog.Value.Float f -> Format.fprintf fmt "Float %f" f
+  | Olog.Value.Bool b -> Format.fprintf fmt "Bool %b" b
+  | Olog.Value.Null -> Format.fprintf fmt "Null"
+
+let value_testable = Alcotest.testable pp_value ( = )
+let opt_value = Alcotest.option value_testable
+let field_value fields key = List.assoc_opt key fields
+
+(* ── Group 10: context wiring ───────────────────────────────────────────── *)
+
+(* F0, F7 — context fields must appear in emitted entry *)
+let test_log_context_fields_appear () =
+  Eio_main.run @@ fun env ->
+  let captured = ref None in
+  let sink : Olog.Logger.sink =
+    {
+      Olog.Logger.emit = (fun entry -> captured := Some entry);
+      flush = (fun () -> ());
+      close = (fun () -> ());
+    }
+  in
+  let config = { Olog.Logger.Config.default with sinks = [ sink ] } in
+  Eio.Switch.run (fun sw ->
+      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      Olog.Context.with_context
+        ~fields:[ ("request_id", Olog.Value.String "req-abc123") ]
+      @@ fun () ->
+      Olog.Logger.log logger ~level:Olog.Level.Info "test";
+      Olog.Logger.flush logger);
+  let entry = Option.get !captured in
+  Alcotest.(check opt_value)
+    "context field request_id appears in entry"
+    (Some (Olog.Value.String "req-abc123"))
+    (field_value entry.Olog.Entry.fields "request_id")
+
+(* F8 — no context fields appear outside with_context scope *)
+let test_log_no_context_outside_scope () =
+  Eio_main.run @@ fun env ->
+  let captured = ref None in
+  let sink : Olog.Logger.sink =
+    {
+      Olog.Logger.emit = (fun entry -> captured := Some entry);
+      flush = (fun () -> ());
+      close = (fun () -> ());
+    }
+  in
+  let config = { Olog.Logger.Config.default with sinks = [ sink ] } in
+  Eio.Switch.run (fun sw ->
+      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      Olog.Logger.log logger ~level:Olog.Level.Info
+        ~fields:[ ("key", Olog.Value.String "val") ]
+        "test";
+      Olog.Logger.flush logger);
+  let entry = Option.get !captured in
+  Alcotest.(check (list (pair string value_testable)))
+    "fields contain only user-supplied key"
+    [ ("key", Olog.Value.String "val") ]
+    entry.Olog.Entry.fields
+
+(* F9 — call-site fields override context on key collision *)
+let test_log_callsite_overrides_context () =
+  Eio_main.run @@ fun env ->
+  let captured = ref None in
+  let sink : Olog.Logger.sink =
+    {
+      Olog.Logger.emit = (fun entry -> captured := Some entry);
+      flush = (fun () -> ());
+      close = (fun () -> ());
+    }
+  in
+  let config = { Olog.Logger.Config.default with sinks = [ sink ] } in
+  Eio.Switch.run (fun sw ->
+      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      Olog.Context.with_context
+        ~fields:
+          [
+            ("k", Olog.Value.String "ctx");
+            ("ctx_only", Olog.Value.String "from-ctx");
+          ]
+      @@ fun () ->
+      Olog.Logger.log logger ~level:Olog.Level.Info
+        ~fields:[ ("k", Olog.Value.String "explicit") ]
+        "test";
+      Olog.Logger.flush logger);
+  let entry = Option.get !captured in
+  let fields = entry.Olog.Entry.fields in
+  Alcotest.(check opt_value)
+    "non-colliding context field appears" (Some (Olog.Value.String "from-ctx"))
+    (field_value fields "ctx_only");
+  Alcotest.(check opt_value)
+    "call-site field overrides context on collision"
+    (Some (Olog.Value.String "explicit")) (field_value fields "k")
+
+(* F10 — log_exn: context, user, and exception fields all present *)
+let test_log_exn_context_user_exn_all_present () =
+  Eio_main.run @@ fun env ->
+  let captured = ref None in
+  let sink : Olog.Logger.sink =
+    {
+      Olog.Logger.emit = (fun entry -> captured := Some entry);
+      flush = (fun () -> ());
+      close = (fun () -> ());
+    }
+  in
+  let config = { Olog.Logger.Config.default with sinks = [ sink ] } in
+  Eio.Switch.run (fun sw ->
+      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      Olog.Context.with_context
+        ~fields:[ ("request_id", Olog.Value.String "req-abc123") ]
+      @@ fun () ->
+      let exn, bt =
+        try raise (Failure "boom")
+        with exn -> (exn, Printexc.get_raw_backtrace ())
+      in
+      Olog.Logger.log_exn logger ~level:Olog.Level.Error exn bt
+        ~fields:[ ("extra", Olog.Value.String "val") ]
+        "error occurred";
+      Olog.Logger.flush logger);
+  let entry = Option.get !captured in
+  let fields = entry.Olog.Entry.fields in
+  Alcotest.(check opt_value)
+    "context field request_id present" (Some (Olog.Value.String "req-abc123"))
+    (field_value fields "request_id");
+  Alcotest.(check opt_value)
+    "user field extra present" (Some (Olog.Value.String "val"))
+    (field_value fields "extra");
+  Alcotest.(check opt_value)
+    "exn.name present" (Some (Olog.Value.String "Failure"))
+    (field_value fields "exn.name");
+  Alcotest.(check bool)
+    "exn.message present" true
+    (Option.is_some (field_value fields "exn.message"));
+  Alcotest.(check bool)
+    "exn.backtrace present" true
+    (Option.is_some (field_value fields "exn.backtrace"))
+
+(* F10 — log_exn: exception fields override both context and user on collision *)
+let test_log_exn_exn_overrides_context_and_user () =
+  Eio_main.run @@ fun env ->
+  let captured = ref None in
+  let sink : Olog.Logger.sink =
+    {
+      Olog.Logger.emit = (fun entry -> captured := Some entry);
+      flush = (fun () -> ());
+      close = (fun () -> ());
+    }
+  in
+  let config = { Olog.Logger.Config.default with sinks = [ sink ] } in
+  Eio.Switch.run (fun sw ->
+      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      Olog.Context.with_context
+        ~fields:
+          [
+            ("exn.name", Olog.Value.String "from-context");
+            ("ctx_field", Olog.Value.String "ctx-val");
+          ]
+      @@ fun () ->
+      let exn, bt =
+        try raise (Failure "boom")
+        with exn -> (exn, Printexc.get_raw_backtrace ())
+      in
+      Olog.Logger.log_exn logger ~level:Olog.Level.Error exn bt
+        ~fields:[ ("exn.name", Olog.Value.String "from-user") ]
+        "error occurred";
+      Olog.Logger.flush logger);
+  let entry = Option.get !captured in
+  let fields = entry.Olog.Entry.fields in
+  Alcotest.(check opt_value)
+    "non-colliding context field present" (Some (Olog.Value.String "ctx-val"))
+    (field_value fields "ctx_field");
+  Alcotest.(check opt_value)
+    "exn.name is real exception name, not context or user value"
+    (Some (Olog.Value.String "Failure"))
+    (field_value fields "exn.name")
+
+(* F11 — nested context: inner scope fields appear, inner wins on collision *)
+let test_log_nested_context_inner_wins () =
+  Eio_main.run @@ fun env ->
+  let captured = ref None in
+  let sink : Olog.Logger.sink =
+    {
+      Olog.Logger.emit = (fun entry -> captured := Some entry);
+      flush = (fun () -> ());
+      close = (fun () -> ());
+    }
+  in
+  let config = { Olog.Logger.Config.default with sinks = [ sink ] } in
+  Eio.Switch.run (fun sw ->
+      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      Olog.Context.with_context
+        ~fields:
+          [
+            ("outer", Olog.Value.String "a");
+            ("shared", Olog.Value.String "outer");
+          ]
+      @@ fun () ->
+      Olog.Context.with_context
+        ~fields:
+          [
+            ("inner", Olog.Value.String "b");
+            ("shared", Olog.Value.String "inner");
+          ]
+      @@ fun () ->
+      Olog.Logger.log logger ~level:Olog.Level.Info "test";
+      Olog.Logger.flush logger);
+  let entry = Option.get !captured in
+  let fields = entry.Olog.Entry.fields in
+  Alcotest.(check opt_value)
+    "outer context field present" (Some (Olog.Value.String "a"))
+    (field_value fields "outer");
+  Alcotest.(check opt_value)
+    "inner context field present" (Some (Olog.Value.String "b"))
+    (field_value fields "inner");
+  Alcotest.(check opt_value)
+    "inner value wins on shared key" (Some (Olog.Value.String "inner"))
+    (field_value fields "shared")
+
 (* ── runner ──────────────────────────────────────────────────────────────── *)
 
 let () =
@@ -608,5 +830,21 @@ let () =
             test_concurrent_log_all_emitted;
           Alcotest.test_case "diagnostics safe to call concurrently with log"
             `Quick test_diagnostics_concurrent;
+        ] );
+      ( "context",
+        [
+          Alcotest.test_case "context fields appear in emitted entry" `Quick
+            test_log_context_fields_appear;
+          Alcotest.test_case "no context fields outside with_context" `Quick
+            test_log_no_context_outside_scope;
+          Alcotest.test_case "call-site fields override context on collision"
+            `Quick test_log_callsite_overrides_context;
+          Alcotest.test_case
+            "log_exn: context, user, and exn fields all present" `Quick
+            test_log_exn_context_user_exn_all_present;
+          Alcotest.test_case "log_exn: exn fields override context and user"
+            `Quick test_log_exn_exn_overrides_context_and_user;
+          Alcotest.test_case "nested context: inner scope fields appear" `Quick
+            test_log_nested_context_inner_wins;
         ] );
     ]

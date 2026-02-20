@@ -9,9 +9,6 @@ let () =
       { Logger.Config.default with sinks = [ sink ] }
       "structured"
   in
-  (* FUTURE: context wiring in Logger.log is deferred to a later session.
-     When wired, the request_id field will appear automatically in every log
-     entry emitted inside this block without being listed in [fields]. *)
   Context.with_context ~fields:[ ("request_id", Value.String "req-abc123") ]
   @@ fun () ->
   [%log.info logger "server started" [ ("port", 8080) ]];
