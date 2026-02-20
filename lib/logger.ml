@@ -63,8 +63,18 @@ let create ~sw ~clock (config : Config.t) name =
 
 let log t ~level ?fields ?src_pos message =
   if is_enabled t level then begin
+    let ctx = Context.current () in
+    let merged_fields =
+      match (ctx, fields) with
+      | [], None -> None
+      | [], Some f -> Some f
+      | ctx, None -> Some ctx
+      | ctx, Some f -> Some (ctx @ f)
+    in
     let timestamp = t.now () in
-    let entry = Entry.create ~level ~message ?fields ?src_pos ~timestamp () in
+    let entry =
+      Entry.create ~level ~message ?fields:merged_fields ?src_pos ~timestamp ()
+    in
     (* TOCTOU: a concurrent fiber may enqueue between the length check and add,
        causing add to briefly suspend. Accepted approximation for a drop-model
        logger; see RFC 0003 §Risks. *)
@@ -82,8 +92,13 @@ let log_exn t ~level exn bt ?fields ?src_pos message =
         ("exn.backtrace", Value.String (Printexc.raw_backtrace_to_string bt));
       ]
     in
+    let ctx = Context.current () in
     let merged =
-      match fields with None -> exn_fields | Some user -> user @ exn_fields
+      match (ctx, fields) with
+      | [], None -> exn_fields
+      | [], Some user -> user @ exn_fields
+      | ctx, None -> ctx @ exn_fields
+      | ctx, Some user -> ctx @ user @ exn_fields
     in
     let timestamp = t.now () in
     let entry =

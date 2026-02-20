@@ -13,6 +13,8 @@ concurrency library.
 implemented. Context propagation, async emission, output destinations, and
 the PPX are planned for future sessions.
 
+See [ROADMAP.md](ROADMAP.md) for the current status of the project.
+
 ## Features
 
 - **Structured logging** — attach typed key-value fields to every log entry

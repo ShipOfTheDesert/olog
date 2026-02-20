@@ -85,12 +85,19 @@ val log :
 (** [log logger ~level ~fields ~src_pos message] enqueues an {!Entry.t} for
     async emission.
 
+    The entry's fields are the merge of the current fiber-local context (see
+    [Context.current]) and any user-supplied [~fields]. Call-site fields
+    override context fields on key collision.
+
     If [level] is below the logger's minimum level, returns immediately without
-    allocating an [Entry.t]. If the queue is full, the entry is dropped and the
-    drop counter is incremented — the calling fiber is never suspended.
+    calling [Context.current] or allocating an [Entry.t]. If the queue is full,
+    the entry is dropped and the drop counter is incremented — the calling fiber
+    is never suspended.
 
     @param level Log severity.
-    @param fields Structured key-value pairs (default [[]]).
+    @param fields
+      Structured key-value pairs (default [[]]). Override context fields with
+      the same key.
     @param src_pos
       Source location, typically injected by a PPX (default [None]).
     @param message Human-readable log message. *)
@@ -111,12 +118,16 @@ val log_exn :
     - [("exn.message", Value.String (Printexc.to_string exn))]
     - [("exn.backtrace", Value.String (Printexc.raw_backtrace_to_string bt))]
 
-    Exception fields are appended after any user-supplied [~fields] and take
-    precedence on key collision. The [exn.] key prefix is reserved;
-    user-supplied fields with this prefix will be overwritten.
+    The entry's fields are the merge of fiber-local context, user-supplied
+    [~fields], and exception fields, in that precedence order (exception fields
+    win on collision, then user fields, then context fields). The [exn.] key
+    prefix is reserved; user-supplied fields with this prefix will be
+    overwritten.
 
-    Like {!log}, this function never raises. If the internal queue is full the
-    entry is dropped and the drop counter is incremented.
+    Like {!log}, this function never raises. If [level] is below the logger's
+    minimum level, returns immediately without calling [Context.current] or
+    capturing any fields. If the internal queue is full the entry is dropped and
+    the drop counter is incremented.
 
     {b Backtrace recording:} [bt] is typically obtained by calling
     [Printexc.get_raw_backtrace ()] immediately after catching the exception.

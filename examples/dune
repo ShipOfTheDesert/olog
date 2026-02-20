@@ -3,3 +3,6 @@
  (libraries olog eio_main)
  (preprocess
   (pps olog_ppx)))
+
+(cram
+ (deps basic.exe structured.exe))
