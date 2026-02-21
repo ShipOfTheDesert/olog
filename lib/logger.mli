@@ -8,7 +8,10 @@
     suspended.
 
     The worker's lifetime is tied to the [Eio.Switch.t] passed to {!create}; it
-    terminates automatically when the switch closes. *)
+    terminates when {!shutdown} is called or when the switch closes. Call
+    {!shutdown} before the switch closes to guarantee that all enqueued entries
+    are delivered. If the switch closes without a prior {!shutdown}, the worker
+    makes a best-effort attempt to drain remaining entries. *)
 
 type sink = {
   emit : Entry.t -> unit;
@@ -48,6 +51,9 @@ type diagnostics = {
   queue_capacity : int;  (** Configured maximum queue size. *)
   drop_count : int;
       (** Total number of entries dropped since the logger was created. *)
+  is_shutdown : bool;
+      (** [true] after {!shutdown} has been called. When [true], {!log} and
+          {!log_exn} are no-ops and {!val:flush} returns immediately. *)
 }
 (** A point-in-time snapshot of a logger's internal metrics. *)
 
@@ -140,6 +146,31 @@ val flush : t -> unit
 (** [flush logger] suspends the calling fiber until all entries currently in the
     queue have been processed by the worker and each sink's [flush] function has
     been called.
+
+    Safe to call concurrently with {!log}. *)
+
+val shutdown : t -> unit
+(** [shutdown logger] initiates a graceful shutdown of the logger.
+
+    The calling fiber is suspended until: 1. All entries currently in the queue
+    have been emitted to every sink. 2. [sink.flush ()] has been called on every
+    configured sink. 3. [sink.close ()] has been called on every configured
+    sink.
+
+    After [shutdown] returns, subsequent calls to {!log} and {!log_exn} are
+    no-ops — entries are dropped and the drop counter is incremented. Subsequent
+    calls to {!val:flush} return immediately without blocking.
+    {!val:diagnostics} reports [is_shutdown = true].
+
+    [shutdown] is idempotent: the second and subsequent calls return
+    immediately.
+
+    {b Best-effort drain on unexpected cancellation.} If the enclosing switch is
+    cancelled without a prior [shutdown] call, the worker makes a best-effort
+    attempt to drain remaining queue entries under [Eio.Cancel.protect] before
+    closing sinks. This is not guaranteed to succeed if sink resources have
+    already been released by cancellation. For guaranteed delivery, call
+    [shutdown] before the switch closes.
 
     Safe to call concurrently with {!log}. *)
 

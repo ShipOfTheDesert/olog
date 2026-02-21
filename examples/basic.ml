@@ -16,5 +16,6 @@ let () =
     ~fields:[ ("host", Value.String "db.local") ];
   Logger.flush logger;
   let d = Logger.diagnostics logger in
-  Printf.printf "diagnostics: name=%s queue_depth=%d drop_count=%d\n" d.name
-    d.queue_depth d.drop_count
+  Printf.printf
+    "diagnostics: name=%s queue_depth=%d drop_count=%d is_shutdown=%b\n" d.name
+    d.queue_depth d.drop_count d.is_shutdown

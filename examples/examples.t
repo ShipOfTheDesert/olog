@@ -7,7 +7,7 @@ basic.ml — text formatter, direct Logger API:
   TIMESTAMP INFO server starting
   TIMESTAMP WARN low disk space free_mb=42
   TIMESTAMP ERROR connection failed host=db.local
-  diagnostics: name=basic queue_depth=0 drop_count=0
+  diagnostics: name=basic queue_depth=0 drop_count=0 is_shutdown=false
 
 structured.ml — JSON formatter, PPX, context fields:
 
