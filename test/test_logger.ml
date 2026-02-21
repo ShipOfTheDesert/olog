@@ -743,6 +743,219 @@ let test_log_nested_context_inner_wins () =
     "inner value wins on shared key" (Some (Olog.Value.String "inner"))
     (field_value fields "shared")
 
+(* ── Group 11: shutdown ─────────────────────────────────────────────────── *)
+
+(* F13 — shutdown drains all queued entries *)
+let test_shutdown_drains_all_queued_entries () =
+  Eio_main.run @@ fun env ->
+  let emitted = ref 0 in
+  let sink : Olog.Logger.sink =
+    {
+      Olog.Logger.emit = (fun _ -> incr emitted);
+      flush = (fun () -> ());
+      close = (fun () -> ());
+    }
+  in
+  let config = { Olog.Logger.Config.default with sinks = [ sink ] } in
+  Eio.Switch.run (fun sw ->
+      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      for _ = 1 to 50 do
+        Olog.Logger.log logger ~level:Olog.Level.Info "msg"
+      done;
+      Olog.Logger.shutdown logger);
+  Alcotest.(check int) "shutdown drains all 50 entries" 50 !emitted
+
+(* F3, F11, F16 — shutdown calls sink flush and close exactly once *)
+let test_shutdown_calls_flush_and_close_exactly_once () =
+  Eio_main.run @@ fun env ->
+  let flush_count = ref 0 in
+  let close_count = ref 0 in
+  let sink : Olog.Logger.sink =
+    {
+      Olog.Logger.emit = (fun _ -> ());
+      flush = (fun () -> incr flush_count);
+      close = (fun () -> incr close_count);
+    }
+  in
+  let config = { Olog.Logger.Config.default with sinks = [ sink ] } in
+  Eio.Switch.run (fun sw ->
+      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      Olog.Logger.log logger ~level:Olog.Level.Info "msg";
+      Olog.Logger.shutdown logger);
+  Alcotest.(check int) "sink flush called exactly once" 1 !flush_count;
+  Alcotest.(check int) "sink close called exactly once" 1 !close_count
+
+(* F4, F5, F15 — log after shutdown is dropped *)
+let test_log_after_shutdown_is_dropped () =
+  Eio_main.run @@ fun env ->
+  let emitted = ref 0 in
+  let sink : Olog.Logger.sink =
+    {
+      Olog.Logger.emit = (fun _ -> incr emitted);
+      flush = (fun () -> ());
+      close = (fun () -> ());
+    }
+  in
+  let config = { Olog.Logger.Config.default with sinks = [ sink ] } in
+  Eio.Switch.run (fun sw ->
+      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      Olog.Logger.shutdown logger;
+      let emitted_before = !emitted in
+      Olog.Logger.log logger ~level:Olog.Level.Info "after-shutdown-1";
+      Olog.Logger.log logger ~level:Olog.Level.Info "after-shutdown-2";
+      Olog.Logger.log logger ~level:Olog.Level.Info "after-shutdown-3";
+      Alcotest.(check int)
+        "no entries emitted after shutdown" emitted_before !emitted;
+      Alcotest.(check int)
+        "drop_count incremented for post-shutdown entries" 3
+        (Olog.Logger.diagnostics logger).drop_count)
+
+(* F6, F17 — flush after shutdown returns immediately *)
+let test_flush_after_shutdown_returns_immediately () =
+  Eio_main.run @@ fun env ->
+  let flush_count = ref 0 in
+  let sink : Olog.Logger.sink =
+    {
+      Olog.Logger.emit = (fun _ -> ());
+      flush = (fun () -> incr flush_count);
+      close = (fun () -> ());
+    }
+  in
+  let config = { Olog.Logger.Config.default with sinks = [ sink ] } in
+  Eio.Switch.run (fun sw ->
+      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      Olog.Logger.shutdown logger;
+      let count_after_shutdown = !flush_count in
+      Olog.Logger.flush logger;
+      Alcotest.(check int)
+        "flush after shutdown does not call sink flush again"
+        count_after_shutdown !flush_count)
+
+(* F7, F18 — shutdown is idempotent *)
+let test_shutdown_is_idempotent () =
+  Eio_main.run @@ fun env ->
+  let close_count = ref 0 in
+  let sink : Olog.Logger.sink =
+    {
+      Olog.Logger.emit = (fun _ -> ());
+      flush = (fun () -> ());
+      close = (fun () -> incr close_count);
+    }
+  in
+  let config = { Olog.Logger.Config.default with sinks = [ sink ] } in
+  Eio.Switch.run (fun sw ->
+      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      Olog.Logger.shutdown logger;
+      Olog.Logger.shutdown logger);
+  Alcotest.(check int)
+    "sink close called only once after two shutdowns" 1 !close_count
+
+(* F12, F19 — diagnostics reports is_shutdown *)
+let test_diagnostics_is_shutdown_flag () =
+  Eio_main.run @@ fun env ->
+  let sink : Olog.Logger.sink =
+    {
+      Olog.Logger.emit = (fun _ -> ());
+      flush = (fun () -> ());
+      close = (fun () -> ());
+    }
+  in
+  let config = { Olog.Logger.Config.default with sinks = [ sink ] } in
+  Eio.Switch.run (fun sw ->
+      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      Alcotest.(check bool)
+        "is_shutdown is false before shutdown" false
+        (Olog.Logger.diagnostics logger).is_shutdown;
+      Olog.Logger.shutdown logger;
+      Alcotest.(check bool)
+        "is_shutdown is true after shutdown" true
+        (Olog.Logger.diagnostics logger).is_shutdown)
+
+(* F3 — shutdown flushes then closes sinks in order *)
+let test_shutdown_flushes_then_closes_in_order () =
+  Eio_main.run @@ fun env ->
+  let order = ref [] in
+  let make_sink id : Olog.Logger.sink =
+    {
+      Olog.Logger.emit = (fun _ -> ());
+      flush = (fun () -> order := Printf.sprintf "s%d-flush" id :: !order);
+      close = (fun () -> order := Printf.sprintf "s%d-close" id :: !order);
+    }
+  in
+  let config =
+    { Olog.Logger.Config.default with sinks = [ make_sink 1; make_sink 2 ] }
+  in
+  Eio.Switch.run (fun sw ->
+      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      Olog.Logger.shutdown logger);
+  Alcotest.(check (list string))
+    "shutdown flushes all sinks then closes all sinks in order"
+    [ "s1-flush"; "s2-flush"; "s1-close"; "s2-close" ]
+    (List.rev !order)
+
+(* ── Group 12: drain-on-cancel ─────────────────────────────────────────── *)
+
+(* F8, F14 — cancel drains remaining queue entries *)
+let test_cancel_drains_remaining_queue_entries () =
+  Eio_main.run @@ fun env ->
+  let emitted = ref 0 in
+  let sink : Olog.Logger.sink =
+    {
+      Olog.Logger.emit = (fun _ -> incr emitted);
+      flush = (fun () -> ());
+      close = (fun () -> ());
+    }
+  in
+  let config =
+    { Olog.Logger.Config.default with queue_depth = 100; sinks = [ sink ] }
+  in
+  (try
+     Eio.Switch.run (fun sw ->
+         let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+         for _ = 1 to 10 do
+           Olog.Logger.log logger ~level:Olog.Level.Info "msg"
+         done;
+         Eio.Switch.fail sw (Failure "cancel"))
+   with Failure _ -> ());
+  Alcotest.(check int) "all entries drained on cancel" 10 !emitted
+
+(* F9, ADR 0007 — drain continues after sink emit failure *)
+let test_drain_continues_after_sink_emit_failure () =
+  Eio_main.run @@ fun env ->
+  let second_emitted = ref 0 in
+  let raising_sink : Olog.Logger.sink =
+    {
+      Olog.Logger.emit = (fun _ -> raise Exit);
+      flush = (fun () -> ());
+      close = (fun () -> ());
+    }
+  in
+  let counting_sink : Olog.Logger.sink =
+    {
+      Olog.Logger.emit = (fun _ -> incr second_emitted);
+      flush = (fun () -> ());
+      close = (fun () -> ());
+    }
+  in
+  let config =
+    {
+      Olog.Logger.Config.default with
+      queue_depth = 100;
+      sinks = [ raising_sink; counting_sink ];
+    }
+  in
+  (try
+     Eio.Switch.run (fun sw ->
+         let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+         for _ = 1 to 10 do
+           Olog.Logger.log logger ~level:Olog.Level.Info "msg"
+         done;
+         Eio.Switch.fail sw (Failure "cancel"))
+   with Failure _ -> ());
+  Alcotest.(check int)
+    "second sink receives all entries despite first sink raising" 10
+    !second_emitted
+
 (* ── runner ──────────────────────────────────────────────────────────────── *)
 
 let () =
@@ -846,5 +1059,29 @@ let () =
             `Quick test_log_exn_exn_overrides_context_and_user;
           Alcotest.test_case "nested context: inner scope fields appear" `Quick
             test_log_nested_context_inner_wins;
+        ] );
+      ( "shutdown",
+        [
+          Alcotest.test_case "shutdown drains all queued entries" `Quick
+            test_shutdown_drains_all_queued_entries;
+          Alcotest.test_case "shutdown calls sink flush and close exactly once"
+            `Quick test_shutdown_calls_flush_and_close_exactly_once;
+          Alcotest.test_case "log after shutdown is dropped" `Quick
+            test_log_after_shutdown_is_dropped;
+          Alcotest.test_case "flush after shutdown returns immediately" `Quick
+            test_flush_after_shutdown_returns_immediately;
+          Alcotest.test_case "shutdown is idempotent" `Quick
+            test_shutdown_is_idempotent;
+          Alcotest.test_case "diagnostics reports is_shutdown" `Quick
+            test_diagnostics_is_shutdown_flag;
+          Alcotest.test_case "shutdown flushes then closes sinks in order"
+            `Quick test_shutdown_flushes_then_closes_in_order;
+        ] );
+      ( "drain-on-cancel",
+        [
+          Alcotest.test_case "cancel drains remaining queue entries" `Quick
+            test_cancel_drains_remaining_queue_entries;
+          Alcotest.test_case "drain continues after sink emit failure" `Quick
+            test_drain_continues_after_sink_emit_failure;
         ] );
     ]
