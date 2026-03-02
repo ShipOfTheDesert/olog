@@ -1,8 +1,20 @@
 (executables
- (names basic structured)
+ (names
+  basic
+  structured
+  context_propagation
+  error_handling
+  custom_output
+  ppx_showcase)
  (libraries olog eio_main)
  (preprocess
   (pps olog_ppx)))
 
 (cram
- (deps basic.exe structured.exe))
+ (deps
+  basic.exe
+  structured.exe
+  context_propagation.exe
+  error_handling.exe
+  custom_output.exe
+  ppx_showcase.exe))
