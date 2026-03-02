@@ -42,28 +42,7 @@ File output destination was removed: docs/rfcs/0010-remove-file-output-destinati
 
 ### Graceful Shutdown and Drain
 
-When a switch is cancelled (process shutdown, SIGTERM, test teardown), the
-worker daemon fiber terminates immediately via `Eio.Cancel.Cancelled`
-propagating through `Eio.Stream.take`. Any entries already enqueued but not yet
-emitted are silently dropped. For a production logger, silent drop on shutdown
-is unacceptable — the last entries before a crash or restart are often the most
-important.
-
-**Tradeoffs and things to consider:**
-- One approach: replace `Fiber.fork_daemon` with `Fiber.fork`; the worker fiber
-  then keeps the switch alive until it finishes draining. The caller must
-  explicitly signal shutdown (e.g. by sending a `Shutdown` sentinel onto the
-  queue, analogous to `Flush`). This changes the lifetime model — the logger
-  no longer terminates automatically when the surrounding switch closes.
-- Another approach: keep the daemon model but register a `Fiber.on_cancel` hook
-  that drains the queue synchronously before allowing cancellation to proceed.
-  This is simpler but blocks cancellation propagation, which may surprise callers.
-- `Logger.flush` already provides a synchronous drain point; the RFC should
-  define whether calling `Logger.flush` before closing the switch is the
-  documented contract (user responsibility) or whether the library guarantees
-  drain on its own.
-- The RFC should include a test: enqueue N entries, cancel the switch without
-  calling `flush`, and assert all N entries are delivered to the sink.
+Implemented: docs/rfcs/0011-graceful-shutdown-and-drain.md
 
 ---
 

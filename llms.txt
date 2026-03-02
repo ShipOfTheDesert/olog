@@ -1,0 +1,300 @@
+# olog
+
+> Production-grade structured async logging for OCaml 5 / Eio.
+
+olog is a logging library for OCaml 5 applications built on the Eio
+effects-based concurrency framework. It provides JSON-structured logs,
+fiber-local context propagation, and async non-blocking emission —
+all in direct-style code with no monads.
+
+## Install
+
+olog is not yet published to opam. Pin it from source:
+
+```
+opam pin add olog.dev git+https://github.com/yourhandle/olog.git
+opam pin add olog_ppx.dev git+https://github.com/yourhandle/olog.git
+```
+
+Or, if vendoring / working from a local checkout:
+
+```
+opam install . --deps-only --with-test
+dune build
+```
+
+### dune dependency
+
+```
+(library
+ (name mylib)
+ (libraries olog)
+ (preprocess (pps olog_ppx)))  ; optional — only if using [%log.info …] syntax
+```
+
+### Requirements
+
+OCaml >= 5.2, dune >= 3.16, Eio >= 1.0, Ptime >= 1.1, Yojson >= 2.1.
+
+## Quick Start
+
+```ocaml
+open Olog
+
+let () =
+  Eio_main.run @@ fun env ->
+  Eio.Switch.run @@ fun sw ->
+  let sink =
+    Output.to_sink (Output.stdout ~env ~formatter:Formatter.json ())
+  in
+  let logger =
+    Logger.create ~sw ~clock:(Eio.Stdenv.clock env)
+      { Logger.Config.default with sinks = [ sink ] }
+      "myapp"
+  in
+  Logger.log logger ~level:Level.Info "server started";
+  Logger.shutdown logger
+```
+
+## Core Concepts
+
+**Logger** — an async structured logger backed by a bounded queue and a
+dedicated worker fiber. Callers enqueue entries and return immediately;
+a worker drains the queue and dispatches to configured sinks. If the
+queue is full, entries are dropped (never blocks the caller).
+
+**Entry** — an immutable record: timestamp, level, message, structured
+fields, and optional source position.
+
+**Context** — fiber-local storage for structured fields. Fields set via
+`Context.with_context` are automatically merged into every log entry
+emitted within that scope. Context is isolated between fibers.
+
+**Formatter** — a pure function `Entry.t -> string`. Built-in: `json`
+(JSON Lines), `logfmt`, and `text`. No Eio dependency — testable
+without a scheduler.
+
+**Output** — a destination vtable (write + close). Built-in: `stdout`,
+`stderr`, and `make` for any `Eio.Flow.sink`. Adapted to a Logger sink
+via `Output.to_sink`.
+
+**Level** — `Trace | Debug | Info | Warn | Error | Fatal`, ordered by
+severity. Entries below the configured minimum are discarded before
+any allocation.
+
+**Value** — structured field values: `String | Int | Float | Bool | Null`.
+
+## API Reference
+
+### Logger
+
+```ocaml
+(* Create a logger — forks a worker fiber under the switch *)
+val Logger.create :
+  sw:Eio.Switch.t -> clock:_ Eio.Time.clock -> Logger.Config.t -> string -> Logger.t
+
+(* Default config: min_level=Info, queue_depth=1024, sinks=[] *)
+val Logger.Config.default : Logger.Config.t
+
+(* Log a message — enqueues and returns immediately *)
+val Logger.log :
+  Logger.t ->
+  level:Level.t ->
+  ?fields:(string * Value.t) list ->
+  ?src_pos:Entry.src_pos ->
+  string -> unit
+
+(* Log with structured exception fields *)
+val Logger.log_exn :
+  Logger.t -> level:Level.t -> exn -> Printexc.raw_backtrace ->
+  ?fields:(string * Value.t) list -> ?src_pos:Entry.src_pos ->
+  string -> unit
+
+(* Check if a level would pass the filter *)
+val Logger.is_enabled : Logger.t -> Level.t -> bool
+
+(* Block until all queued entries are emitted and sinks flushed *)
+val Logger.flush : Logger.t -> unit
+
+(* Graceful shutdown — drain, flush, close all sinks *)
+val Logger.shutdown : Logger.t -> unit
+
+(* Point-in-time metrics snapshot *)
+val Logger.diagnostics : Logger.t -> Logger.diagnostics
+```
+
+### Context
+
+```ocaml
+(* Add fields to the fiber-local context for the duration of f *)
+val Context.with_context :
+  fields:(string * Value.t) list -> (unit -> 'a) -> 'a
+
+(* Retrieve current fiber-local context fields *)
+val Context.current : unit -> (string * Value.t) list
+```
+
+### Formatter
+
+```ocaml
+val Formatter.json   : Formatter.t   (* JSON Lines *)
+val Formatter.logfmt : Formatter.t   (* key=value pairs *)
+val Formatter.text   : Formatter.t   (* human-readable *)
+```
+
+### Output
+
+```ocaml
+(* Standard output/error destinations *)
+val Output.stdout :
+  env:< stdout : _ Eio.Flow.sink ; .. > -> formatter:Formatter.t -> unit -> Output.t
+val Output.stderr :
+  env:< stderr : _ Eio.Flow.sink ; .. > -> formatter:Formatter.t -> unit -> Output.t
+
+(* Any Eio flow *)
+val Output.make :
+  name:string -> formatter:Formatter.t -> _ Eio.Flow.sink -> Output.t
+
+(* Adapt for Logger.Config.sinks *)
+val Output.to_sink : Output.t -> Logger.sink
+```
+
+### Level
+
+```ocaml
+type Level.t = Trace | Debug | Info | Warn | Error | Fatal
+val Level.to_string : Level.t -> string
+val Level.of_string : string -> (Level.t, string) result
+```
+
+### Value
+
+```ocaml
+type Value.t = String of string | Int of int | Float of float | Bool of bool | Null
+val Value.to_string : Value.t -> string
+```
+
+### Entry
+
+```ocaml
+type Entry.t = {
+  timestamp : Ptime.t;
+  level     : Level.t;
+  message   : string;
+  fields    : (string * Value.t) list;
+  src_pos   : Entry.src_pos option;
+}
+
+val Entry.create :
+  level:Level.t -> message:string ->
+  ?fields:(string * Value.t) list -> ?src_pos:Entry.src_pos ->
+  timestamp:Ptime.t -> unit -> Entry.t
+```
+
+## PPX (olog_ppx)
+
+The `olog_ppx` package provides `[%log.LEVEL]` extension points that
+expand to guarded `Logger.log` calls with compile-time source location
+injection and automatic `Value` wrapping for literal field values.
+
+```ocaml
+(* Before — manual *)
+Logger.log logger ~level:Level.Info "request received"
+  ~fields:[("method", Value.String "GET"); ("path", Value.String "/health")]
+
+(* After — with PPX *)
+[%log.info logger "request received" [("method", "GET"); ("path", "/health")]]
+```
+
+String and integer literals in the field list are automatically wrapped
+in `Value.String` / `Value.Int`. The PPX also generates an
+`is_enabled` guard so no allocation occurs when the level is filtered.
+
+Available extensions: `[%log.trace]`, `[%log.debug]`, `[%log.info]`,
+`[%log.warn]`, `[%log.error]`, `[%log.fatal]`.
+
+Exception variants: `[%log.error_exn logger exn bt "msg" fields]`.
+
+### dune setup for PPX
+
+```
+(library
+ (name mylib)
+ (preprocess (pps olog_ppx)))
+```
+
+## Patterns
+
+### Fiber-local context propagation
+
+```ocaml
+(* All log calls inside the callback automatically include request_id *)
+Context.with_context
+  ~fields:[("request_id", Value.String "req-abc123")]
+@@ fun () ->
+  Logger.log logger ~level:Level.Info "handling request";
+  (* Nested context — adds user_id, keeps request_id *)
+  Context.with_context
+    ~fields:[("user_id", Value.Int 42)]
+  @@ fun () ->
+    Logger.log logger ~level:Level.Debug "authorized"
+```
+
+### Exception logging
+
+```ocaml
+begin
+  try dangerous_operation ()
+  with exn ->
+    let bt = Printexc.get_raw_backtrace () in
+    Logger.log_exn logger ~level:Level.Error exn bt "operation failed"
+      ~fields:[("op", Value.String "dangerous_operation")]
+end
+```
+
+### Multiple output destinations
+
+```ocaml
+let json_stdout = Output.to_sink (Output.stdout ~env ~formatter:Formatter.json ()) in
+let text_stderr = Output.to_sink (Output.stderr ~env ~formatter:Formatter.text ()) in
+let logger =
+  Logger.create ~sw ~clock:(Eio.Stdenv.clock env)
+    { Logger.Config.default with sinks = [json_stdout; text_stderr] }
+    "myapp"
+```
+
+### Graceful shutdown
+
+```ocaml
+(* Always shut down the logger before the switch closes *)
+Eio.Switch.run @@ fun sw ->
+let logger = Logger.create ~sw ~clock:(Eio.Stdenv.clock env)
+  { Logger.Config.default with sinks = [sink] } "myapp"
+in
+Fun.protect ~finally:(fun () -> Logger.shutdown logger)
+  (fun () ->
+    Logger.log logger ~level:Level.Info "working...";
+    (* ... application logic ... *)
+  )
+```
+
+### Diagnostics / observability
+
+```ocaml
+let d = Logger.diagnostics logger in
+Printf.printf "queue=%d/%d drops=%d shutdown=%b\n"
+  d.queue_depth d.queue_capacity d.drop_count d.is_shutdown
+```
+
+## Key Design Decisions
+
+- **Never blocks the caller**: if the queue is full, entries are dropped
+  and counted. Use `diagnostics` to monitor drop counts.
+- **Errors as values**: `Level.of_string` and `Value.of_yojson` return
+  `result` types, never raise.
+- **No global state**: each `Logger.t` is independent. There is no
+  implicit global logger.
+- **Context isolation**: fiber-local context does not propagate to
+  child fibers — set context explicitly where needed.
+- **Formatter purity**: formatters are pure functions with no Eio
+  dependency. They can be tested without a scheduler.
