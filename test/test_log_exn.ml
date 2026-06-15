@@ -6,21 +6,32 @@ let make_capturing_sink () =
   let entries = ref [] in
   let sink : Logger.sink =
     {
-      emit = (fun e -> entries := e :: !entries);
-      flush = Fun.id;
-      close = Fun.id;
+      name = "capture";
+      emit =
+        (fun e ->
+          entries := e :: !entries;
+          Ok ());
+      flush = (fun () -> Ok ());
+      close = (fun () -> Ok ());
     }
   in
   (sink, entries)
+
+let unwrap label = function
+  | Ok v -> v
+  | Error msg -> Alcotest.failf "%s: %s" label msg
 
 let with_test_logger min_level f =
   Eio_main.run @@ fun env ->
   Eio.Switch.run @@ fun sw ->
   let sink, entries = make_capturing_sink () in
+  let config =
+    unwrap "Config.make"
+      (Logger.Config.make ~min_level ~queue_depth:64 ~sinks:[ sink ] ())
+  in
   let logger =
-    Logger.create ~sw ~clock:(Eio.Stdenv.clock env)
-      { Logger.Config.min_level; queue_depth = 64; sinks = [ sink ] }
-      "test"
+    unwrap "Logger.create"
+      (Logger.create ~sw ~clock:(Eio.Stdenv.clock env) config "test")
   in
   f logger entries
 
@@ -134,14 +145,14 @@ let test_log_exn_never_raises_on_full_queue () =
   Eio_main.run @@ fun env ->
   Eio.Switch.run @@ fun sw ->
   let sink, _entries = make_capturing_sink () in
+  let config =
+    unwrap "Config.make"
+      (Logger.Config.make ~min_level:Level.Trace ~queue_depth:1 ~sinks:[ sink ]
+         ())
+  in
   let logger =
-    Logger.create ~sw ~clock:(Eio.Stdenv.clock env)
-      {
-        Logger.Config.min_level = Level.Trace;
-        queue_depth = 1;
-        sinks = [ sink ];
-      }
-      "test"
+    unwrap "Logger.create"
+      (Logger.create ~sw ~clock:(Eio.Stdenv.clock env) config "test")
   in
   let exn = Failure "test" in
   let bt = Printexc.get_callstack 0 in

@@ -15,10 +15,20 @@ let () =
   Eio_main.run @@ fun env ->
   Eio.Switch.run @@ fun sw ->
   let sink = Output.to_sink (Output.stdout ~env ~formatter:Formatter.json ()) in
+  let config =
+    match
+      Logger.Config.make ~min_level:Level.Info ~queue_depth:1024 ~sinks:[ sink ]
+        ()
+    with
+    | Ok config -> config
+    | Error msg -> failwith msg
+  in
   let logger =
-    Logger.create ~sw ~clock:(Eio.Stdenv.clock env)
-      { Logger.Config.default with sinks = [ sink ] }
-      "error_demo"
+    match
+      Logger.create ~sw ~clock:(Eio.Stdenv.clock env) config "error_demo"
+    with
+    | Ok logger -> logger
+    | Error msg -> failwith msg
   in
   (* Manual exception logging with Logger.log_exn *)
   (try connect_to_database "db.prod.internal"

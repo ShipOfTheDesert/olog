@@ -7,6 +7,13 @@
     If the queue is full, entries are dropped and counted — callers are never
     suspended.
 
+    Accounting is conservative: every entry accepted by {!log}/{!log_exn} — one
+    at or above the configured minimum level — is either {e emitted} (dispatched
+    to every sink) or counted in [diagnostics.drop_count], never silently lost.
+    This holds under concurrent load from many fibers and under switch
+    cancellation. An entry counts as emitted once it has been dispatched to the
+    sinks; a per-sink failure is reported to process stderr, not re-queued.
+
     The worker's lifetime is tied to the [Eio.Switch.t] passed to {!create}; it
     terminates when {!shutdown} is called or when the switch closes. Call
     {!shutdown} before the switch closes to guarantee that all enqueued entries
@@ -14,34 +21,66 @@
     makes a best-effort attempt to drain remaining entries. *)
 
 type sink = {
-  emit : Entry.t -> unit;
-      (** Called by the worker fiber for each log entry. May perform I/O. If
-          this raises, the worker catches the exception and continues. *)
-  flush : unit -> unit;
+  name : string;
+      (** Identifies the sink in the worker's fallback error reports. *)
+  emit : Entry.t -> (unit, string) result;
+      (** Called by the worker fiber for each log entry. May perform I/O.
+          Expected failures are reported as [Error msg]; the worker logs a
+          fallback line to process stderr and continues with the next entry. A
+          sink that raises instead (a contract violation) is also tolerated —
+          the worker reports it and survives — but [Eio.Cancel.Cancelled] is
+          always re-raised, never swallowed. *)
+  flush : unit -> (unit, string) result;
       (** Flush any buffered output. Called after all preceding entries have
-          been emitted when {!val:flush} is invoked on the logger. *)
-  close : unit -> unit;
-      (** Release resources. Called once when the switch closes. Exceptions are
-          caught and ignored. *)
+          been emitted when {!val:flush} is invoked on the logger. Same
+          error-reporting contract as {!emit}. *)
+  close : unit -> (unit, string) result;
+      (** Release resources. Called once when the switch closes. Same
+          error-reporting contract as {!emit}. *)
 }
-(** An output destination — a record of three functions handling emission,
-    flushing, and teardown. Compose multiple sinks via {!Config.sinks}. *)
+(** An output destination — a record of a [name] and three functions handling
+    emission, flushing, and teardown. Each operation reports expected failures
+    as [Error msg] rather than raising. Compose multiple sinks via
+    {!Config.sinks}. *)
+
+(** Policy for handling a clock whose reading cannot be represented as a
+    [Ptime.t]. *)
+type timestamp_fallback =
+  | Fail
+      (** Probe the clock at {!create}; reject an already-broken clock by
+          returning [Error]. *)
+  | Mark_invalid
+      (** On an unrepresentable timestamp, stamp [Ptime.epoch] and append the
+          reserved field [("olog.invalid_timestamp", Value.Bool true)]. *)
 
 module Config : sig
-  type t = {
+  type t = private {
     min_level : Level.t;
         (** Minimum level accepted. Entries below this level are discarded
             before any queue allocation. *)
     queue_depth : int;
         (** Maximum number of entries in the async queue. When full, new entries
-            are dropped and the drop counter is incremented. Must be a positive
-            integer. *)
+            are dropped and the drop counter is incremented. Always a positive
+            integer (enforced by {!make}). *)
     sinks : sink list;
         (** Output destinations, called in list order for each emitted entry. *)
+    timestamp_fallback : timestamp_fallback;
+        (** Policy applied when the clock yields an unrepresentable timestamp.
+        *)
   }
+  (** Logger configuration. The record is [private]: construct values via
+      {!make}, which validates [queue_depth]. *)
 
-  val default : t
-  (** [default] is [{min_level = Info; queue_depth = 1024; sinks = []}]. *)
+  val make :
+    min_level:Level.t ->
+    queue_depth:int ->
+    sinks:sink list ->
+    ?timestamp_fallback:timestamp_fallback ->
+    unit ->
+    (t, string) result
+  (** [make ~min_level ~queue_depth ~sinks ?timestamp_fallback ()] builds a
+      validated {!t}. Returns [Error] if [queue_depth < 1]. [timestamp_fallback]
+      defaults to {!Mark_invalid}. *)
 end
 
 type diagnostics = {
@@ -61,7 +100,11 @@ type t
 (** An asynchronous structured logger. Opaque — use {!create} to construct. *)
 
 val create :
-  sw:Eio.Switch.t -> clock:_ Eio.Time.clock -> Config.t -> string -> t
+  sw:Eio.Switch.t ->
+  clock:_ Eio.Time.clock ->
+  Config.t ->
+  string ->
+  (t, string) result
 (** [create ~sw ~clock config name] creates a new logger named [name].
     Initialises a bounded queue of [config.queue_depth] entries, an atomic drop
     counter at zero, and forks a worker daemon fiber under [sw]. The worker
@@ -94,6 +137,12 @@ val log :
     The entry's fields are the merge of the current fiber-local context (see
     [Context.current]) and any user-supplied [~fields]. Call-site fields
     override context fields on key collision.
+
+    The [olog.] field-name prefix is reserved for the logger itself (as the
+    [exn.] prefix is reserved for {!log_exn}); user-supplied fields with this
+    prefix may be overwritten. The logger emits
+    [("olog.invalid_timestamp", Value.Bool true)] when the clock yields an
+    unrepresentable timestamp under the {!Mark_invalid} policy.
 
     If [level] is below the logger's minimum level, returns immediately without
     calling [Context.current] or allocating an [Entry.t]. If the queue is full,
@@ -147,6 +196,10 @@ val flush : t -> unit
     queue have been processed by the worker and each sink's [flush] function has
     been called.
 
+    If the worker has already terminated — whether through {!shutdown} or
+    because the enclosing switch was cancelled — [flush] returns promptly
+    instead of blocking forever.
+
     Safe to call concurrently with {!log}. *)
 
 val shutdown : t -> unit
@@ -162,8 +215,11 @@ val shutdown : t -> unit
     calls to {!val:flush} return immediately without blocking.
     {!val:diagnostics} reports [is_shutdown = true].
 
-    [shutdown] is idempotent: the second and subsequent calls return
-    immediately.
+    [shutdown] is idempotent and safe under concurrent invocation: any number of
+    fibers, across any number of domains, may call it simultaneously, and every
+    caller returns once shutdown has completed. It also returns promptly —
+    rather than blocking forever — when the worker has already terminated
+    because the enclosing switch was cancelled.
 
     {b Best-effort drain on unexpected cancellation.} If the enclosing switch is
     cancelled without a prior [shutdown] call, the worker makes a best-effort

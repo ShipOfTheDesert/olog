@@ -4,28 +4,32 @@
     entries and releasing resources. Built-in constructors cover stdout and
     stderr.
 
-    {!t.write} never propagates exceptions — I/O errors are caught and a
-    best-effort error line is written to the process stderr. Use {!to_sink} to
-    adapt an {!t} for use with [Logger.Config.sinks]. *)
+    {!t.write} reports I/O failures as [Error msg] rather than raising;
+    [Eio.Cancel.Cancelled] is the one exception that propagates. The logger
+    worker reports the [Error] to process stderr. Use {!to_sink} to adapt an
+    {!t} for use with [Logger.Config.sinks]. *)
 
 type t = {
   name : string;
       (** Human-readable name, used in error messages and diagnostics. *)
-  write : Entry.t list -> unit;
-      (** Write a batch of entries to the destination. Must not raise — see
-          module documentation. Called by the logger worker fiber. *)
-  close : unit -> unit;
-      (** Release underlying resources. Called once at teardown by the logger
-          worker via {!to_sink}. Must not raise. *)
+  write : Entry.t list -> (unit, string) result;
+      (** Write a batch of entries to the destination. Returns [Error msg] on
+          I/O failure rather than raising (except [Eio.Cancel.Cancelled], which
+          propagates). Called by the logger worker fiber. *)
+  close : unit -> (unit, string) result;
+      (** Release underlying resources. Returns [Error msg] on failure. Called
+          once at teardown by the logger worker via {!to_sink}. *)
 }
-(** An output destination — a named pair of write and close functions. *)
+(** An output destination — a named pair of write and close functions, each
+    reporting failure as [Error msg]. *)
 
 val make : name:string -> formatter:Formatter.t -> _ Eio.Flow.sink -> t
 (** [make ~name ~formatter flow] creates an output that formats each entry with
     [formatter] and writes the resulting strings to [flow].
 
-    [close ()] is a no-op — the caller retains ownership of [flow]. Exceptions
-    from [flow] writes are caught per the error-safety contract. *)
+    [close ()] is a no-op returning [Ok ()] — the caller retains ownership of
+    [flow]. Exceptions from [flow] writes are converted to [Error msg];
+    [Eio.Cancel.Cancelled] is re-raised so the worker can shut down. *)
 
 val stdout :
   env:< stdout : _ Eio.Flow.sink ; .. > -> formatter:Formatter.t -> unit -> t
