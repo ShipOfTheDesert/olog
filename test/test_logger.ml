@@ -1,21 +1,111 @@
 (* ── Group 1: Config ─────────────────────────────────────────────────────── *)
 
-(* F3 *)
-let test_config_default_min_level () =
+(* F4 — Config.make validates queue_depth >= 1 (RFC 0013) *)
+let test_config_make_rejects_nonpositive_queue_depth () =
+  let is_error = function Ok _ -> false | Error _ -> true in
   Alcotest.(check bool)
-    "default min_level is Info" true
-    (Olog.Level.equal Olog.Logger.Config.default.min_level Olog.Level.Info)
-
-(* F3 *)
-let test_config_default_queue_depth () =
-  Alcotest.(check int)
-    "default queue_depth is 1024" 1024 Olog.Logger.Config.default.queue_depth
-
-(* F3 *)
-let test_config_default_sinks () =
+    "queue_depth 0 is rejected" true
+    (is_error
+       (Olog.Logger.Config.make ~min_level:Olog.Level.Info ~queue_depth:0
+          ~sinks:[] ()));
   Alcotest.(check bool)
-    "default sinks is empty list" true
-    (Olog.Logger.Config.default.sinks = [])
+    "queue_depth -1 is rejected" true
+    (is_error
+       (Olog.Logger.Config.make ~min_level:Olog.Level.Info ~queue_depth:(-1)
+          ~sinks:[] ()));
+  Alcotest.(check bool)
+    "queue_depth 1 is accepted" false
+    (is_error
+       (Olog.Logger.Config.make ~min_level:Olog.Level.Info ~queue_depth:1
+          ~sinks:[] ()))
+
+(* Test helpers. [Config.make] and [create] now return results; in these
+   fixtures the inputs are statically valid, so any [Error] is a programmer
+   error in the test itself — surface it loudly with its diagnostic message. *)
+let make_config ?(min_level = Olog.Level.Info) ?(queue_depth = 1024)
+    ?(sinks = []) ?timestamp_fallback () =
+  match
+    Olog.Logger.Config.make ~min_level ~queue_depth ~sinks ?timestamp_fallback
+      ()
+  with
+  | Ok config -> config
+  | Error msg -> Alcotest.failf "Config.make: %s" msg
+
+let make_logger ~sw ~clock config name =
+  match Olog.Logger.create ~sw ~clock config name with
+  | Ok logger -> logger
+  | Error msg -> Alcotest.failf "Logger.create: %s" msg
+
+(* A clock whose current reading is a mutable [float ref], so a test can make
+   it "break" — return a value [Ptime.of_float_s] rejects (NaN / out of range)
+   — at a chosen moment. Self-contained via [Eio.Time.Pi]: no dependency on
+   eio.mock and full control over the exact reading. *)
+module Mock_clock = struct
+  type t = float ref
+  type time = float
+
+  let now (r : t) = !r
+  let sleep_until _ _ = ()
+end
+
+let mock_clock (r : float ref) : _ Eio.Time.clock =
+  Eio.Resource.T
+    ( r,
+      Eio.Time.Pi.clock
+        (module Mock_clock : Eio.Time.Pi.CLOCK
+          with type t = float ref
+           and type time = float) )
+
+(* Most test sinks perform a side effect and succeed; [mk_sink] wraps the
+   effectful callbacks so each returns [Ok ()] under the result contract
+   (RFC 0013). A raising callback still raises (it never reaches [Ok ()]),
+   which is exactly what the contract-violation tests need. Tests that must
+   return [Error] construct the record directly. *)
+let mk_sink ?(name = "test") ?(emit = fun _ -> ()) ?(flush = fun () -> ())
+    ?(close = fun () -> ()) () : Olog.Logger.sink =
+  {
+    Olog.Logger.name;
+    emit =
+      (fun e ->
+        emit e;
+        Ok ());
+    flush =
+      (fun () ->
+        flush ();
+        Ok ());
+    close =
+      (fun () ->
+        close ();
+        Ok ());
+  }
+
+(* Capture everything written to process [stderr] (fd 2) while [f] runs, by
+   redirecting the fd to a temp file and reading it back. [report_sink_error]
+   writes its fallback line through [Printf.eprintf] — raw fd 2 by design
+   (ADR 0006), not an Eio flow — so asserting on it means capturing the fd. *)
+let capture_stderr f =
+  flush stderr;
+  let tmp = Filename.temp_file "olog_stderr" ".txt" in
+  let fd = Unix.openfile tmp [ Unix.O_WRONLY ] 0o600 in
+  let saved = Unix.dup Unix.stderr in
+  Unix.dup2 fd Unix.stderr;
+  Fun.protect
+    ~finally:(fun () ->
+      flush stderr;
+      Unix.dup2 saved Unix.stderr;
+      Unix.close saved;
+      Unix.close fd)
+    f;
+  let content = In_channel.with_open_bin tmp In_channel.input_all in
+  Sys.remove tmp;
+  content
+
+let string_contains ~needle haystack =
+  let nl = String.length needle and hl = String.length haystack in
+  let rec at i =
+    i + nl <= hl && (String.sub haystack i nl = needle || at (i + 1))
+  in
+  nl = 0 || at 0
 
 (* ── Group 2: is_enabled ─────────────────────────────────────────────────── *)
 
@@ -23,10 +113,7 @@ let test_config_default_sinks () =
 let test_is_enabled_at_min_level () =
   Eio_main.run @@ fun env ->
   Eio.Switch.run (fun sw ->
-      let logger =
-        Olog.Logger.create ~sw ~clock:env#clock Olog.Logger.Config.default
-          "test"
-      in
+      let logger = make_logger ~sw ~clock:env#clock (make_config ()) "test" in
       Alcotest.(check bool)
         "true when level equals min_level" true
         (Olog.Logger.is_enabled logger Olog.Level.Info))
@@ -35,10 +122,7 @@ let test_is_enabled_at_min_level () =
 let test_is_enabled_above_min_level () =
   Eio_main.run @@ fun env ->
   Eio.Switch.run (fun sw ->
-      let logger =
-        Olog.Logger.create ~sw ~clock:env#clock Olog.Logger.Config.default
-          "test"
-      in
+      let logger = make_logger ~sw ~clock:env#clock (make_config ()) "test" in
       Alcotest.(check bool)
         "true when level exceeds min_level" true
         (Olog.Logger.is_enabled logger Olog.Level.Error))
@@ -47,10 +131,7 @@ let test_is_enabled_above_min_level () =
 let test_is_enabled_below_min_level () =
   Eio_main.run @@ fun env ->
   Eio.Switch.run (fun sw ->
-      let logger =
-        Olog.Logger.create ~sw ~clock:env#clock Olog.Logger.Config.default
-          "test"
-      in
+      let logger = make_logger ~sw ~clock:env#clock (make_config ()) "test" in
       Alcotest.(check bool)
         "false when level is below min_level" false
         (Olog.Logger.is_enabled logger Olog.Level.Debug))
@@ -61,10 +142,7 @@ let test_is_enabled_below_min_level () =
 let test_create_drop_count_zero () =
   Eio_main.run @@ fun env ->
   Eio.Switch.run (fun sw ->
-      let logger =
-        Olog.Logger.create ~sw ~clock:env#clock Olog.Logger.Config.default
-          "test"
-      in
+      let logger = make_logger ~sw ~clock:env#clock (make_config ()) "test" in
       let diag = Olog.Logger.diagnostics logger in
       Alcotest.(check int) "drop_count is zero after create" 0 diag.drop_count)
 
@@ -73,8 +151,7 @@ let test_create_name_in_diagnostics () =
   Eio_main.run @@ fun env ->
   Eio.Switch.run (fun sw ->
       let logger =
-        Olog.Logger.create ~sw ~clock:env#clock Olog.Logger.Config.default
-          "my-logger"
+        make_logger ~sw ~clock:env#clock (make_config ()) "my-logger"
       in
       let diag = Olog.Logger.diagnostics logger in
       Alcotest.(check string)
@@ -84,8 +161,8 @@ let test_create_name_in_diagnostics () =
 let test_create_queue_capacity () =
   Eio_main.run @@ fun env ->
   Eio.Switch.run (fun sw ->
-      let config = { Olog.Logger.Config.default with queue_depth = 64 } in
-      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      let config = make_config ~queue_depth:64 () in
+      let logger = make_logger ~sw ~clock:env#clock config "test" in
       let diag = Olog.Logger.diagnostics logger in
       Alcotest.(check int)
         "queue_capacity matches config" 64 diag.queue_capacity)
@@ -94,10 +171,7 @@ let test_create_queue_capacity () =
 let test_create_queue_depth_zero () =
   Eio_main.run @@ fun env ->
   Eio.Switch.run (fun sw ->
-      let logger =
-        Olog.Logger.create ~sw ~clock:env#clock Olog.Logger.Config.default
-          "test"
-      in
+      let logger = make_logger ~sw ~clock:env#clock (make_config ()) "test" in
       let diag = Olog.Logger.diagnostics logger in
       Alcotest.(check int) "queue_depth is zero after create" 0 diag.queue_depth)
 
@@ -107,22 +181,10 @@ let test_create_queue_depth_zero () =
 let test_log_below_min_no_emit () =
   Eio_main.run @@ fun env ->
   let emitted = ref 0 in
-  let sink : Olog.Logger.sink =
-    {
-      Olog.Logger.emit = (fun _ -> incr emitted);
-      flush = (fun () -> ());
-      close = (fun () -> ());
-    }
-  in
-  let config =
-    {
-      Olog.Logger.Config.default with
-      min_level = Olog.Level.Info;
-      sinks = [ sink ];
-    }
-  in
+  let sink = mk_sink ~emit:(fun _ -> incr emitted) () in
+  let config = make_config ~min_level:Olog.Level.Info ~sinks:[ sink ] () in
   Eio.Switch.run (fun sw ->
-      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      let logger = make_logger ~sw ~clock:env#clock config "test" in
       Olog.Logger.log logger ~level:Olog.Level.Debug "below min";
       Olog.Logger.flush logger);
   Alcotest.(check int) "log below min_level does not call sink emit" 0 !emitted
@@ -131,11 +193,9 @@ let test_log_below_min_no_emit () =
 let test_log_below_min_no_drop () =
   Eio_main.run @@ fun env ->
   let drop_count_after = ref (-1) in
-  let config =
-    { Olog.Logger.Config.default with min_level = Olog.Level.Info }
-  in
+  let config = make_config ~min_level:Olog.Level.Info () in
   Eio.Switch.run (fun sw ->
-      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      let logger = make_logger ~sw ~clock:env#clock config "test" in
       Olog.Logger.log logger ~level:Olog.Level.Debug "below min";
       Olog.Logger.flush logger;
       drop_count_after := (Olog.Logger.diagnostics logger).drop_count);
@@ -146,22 +206,10 @@ let test_log_below_min_no_drop () =
 let test_log_at_min_emits () =
   Eio_main.run @@ fun env ->
   let emitted = ref 0 in
-  let sink : Olog.Logger.sink =
-    {
-      Olog.Logger.emit = (fun _ -> incr emitted);
-      flush = (fun () -> ());
-      close = (fun () -> ());
-    }
-  in
-  let config =
-    {
-      Olog.Logger.Config.default with
-      min_level = Olog.Level.Info;
-      sinks = [ sink ];
-    }
-  in
+  let sink = mk_sink ~emit:(fun _ -> incr emitted) () in
+  let config = make_config ~min_level:Olog.Level.Info ~sinks:[ sink ] () in
   Eio.Switch.run (fun sw ->
-      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      let logger = make_logger ~sw ~clock:env#clock config "test" in
       Olog.Logger.log logger ~level:Olog.Level.Info "at min";
       Olog.Logger.flush logger);
   Alcotest.(check int) "log at min_level emits entry after flush" 1 !emitted
@@ -170,22 +218,10 @@ let test_log_at_min_emits () =
 let test_log_above_min_emits () =
   Eio_main.run @@ fun env ->
   let emitted = ref 0 in
-  let sink : Olog.Logger.sink =
-    {
-      Olog.Logger.emit = (fun _ -> incr emitted);
-      flush = (fun () -> ());
-      close = (fun () -> ());
-    }
-  in
-  let config =
-    {
-      Olog.Logger.Config.default with
-      min_level = Olog.Level.Info;
-      sinks = [ sink ];
-    }
-  in
+  let sink = mk_sink ~emit:(fun _ -> incr emitted) () in
+  let config = make_config ~min_level:Olog.Level.Info ~sinks:[ sink ] () in
   Eio.Switch.run (fun sw ->
-      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      let logger = make_logger ~sw ~clock:env#clock config "test" in
       Olog.Logger.log logger ~level:Olog.Level.Error "above min";
       Olog.Logger.flush logger);
   Alcotest.(check int) "log above min_level emits entry after flush" 1 !emitted
@@ -196,18 +232,10 @@ let test_log_above_min_emits () =
 let test_log_emits_to_each_sink () =
   Eio_main.run @@ fun env ->
   let order = ref [] in
-  let make_sink id : Olog.Logger.sink =
-    {
-      Olog.Logger.emit = (fun _ -> order := id :: !order);
-      flush = (fun () -> ());
-      close = (fun () -> ());
-    }
-  in
-  let config =
-    { Olog.Logger.Config.default with sinks = [ make_sink 1; make_sink 2 ] }
-  in
+  let make_sink id = mk_sink ~emit:(fun _ -> order := id :: !order) () in
+  let config = make_config ~sinks:[ make_sink 1; make_sink 2 ] () in
   Eio.Switch.run (fun sw ->
-      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      let logger = make_logger ~sw ~clock:env#clock config "test" in
       Olog.Logger.log logger ~level:Olog.Level.Info "msg";
       Olog.Logger.flush logger);
   (* Called in list order 1 then 2; prepended so reversed *)
@@ -218,25 +246,11 @@ let test_log_emits_to_each_sink () =
 let test_log_continues_after_sink_raise () =
   Eio_main.run @@ fun env ->
   let second_emitted = ref 0 in
-  let raising_sink : Olog.Logger.sink =
-    {
-      Olog.Logger.emit = (fun _ -> raise Exit);
-      flush = (fun () -> ());
-      close = (fun () -> ());
-    }
-  in
-  let counting_sink : Olog.Logger.sink =
-    {
-      Olog.Logger.emit = (fun _ -> incr second_emitted);
-      flush = (fun () -> ());
-      close = (fun () -> ());
-    }
-  in
-  let config =
-    { Olog.Logger.Config.default with sinks = [ raising_sink; counting_sink ] }
-  in
+  let raising_sink = mk_sink ~emit:(fun _ -> raise Exit) () in
+  let counting_sink = mk_sink ~emit:(fun _ -> incr second_emitted) () in
+  let config = make_config ~sinks:[ raising_sink; counting_sink ] () in
   Eio.Switch.run (fun sw ->
-      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      let logger = make_logger ~sw ~clock:env#clock config "test" in
       Olog.Logger.log logger ~level:Olog.Level.Info "msg";
       Olog.Logger.flush logger);
   Alcotest.(check int)
@@ -246,24 +260,104 @@ let test_log_continues_after_sink_raise () =
 let test_log_next_entry_after_raise () =
   Eio_main.run @@ fun env ->
   let call_count = ref 0 in
-  let sink : Olog.Logger.sink =
-    {
-      Olog.Logger.emit =
-        (fun _ ->
-          incr call_count;
-          if !call_count = 1 then raise Exit);
-      flush = (fun () -> ());
-      close = (fun () -> ());
-    }
+  let sink =
+    mk_sink
+      ~emit:(fun _ ->
+        incr call_count;
+        if !call_count = 1 then raise Exit)
+      ()
   in
-  let config = { Olog.Logger.Config.default with sinks = [ sink ] } in
+  let config = make_config ~sinks:[ sink ] () in
   Eio.Switch.run (fun sw ->
-      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      let logger = make_logger ~sw ~clock:env#clock config "test" in
       Olog.Logger.log logger ~level:Olog.Level.Info "first";
       Olog.Logger.log logger ~level:Olog.Level.Info "second";
       Olog.Logger.flush logger);
   Alcotest.(check int)
     "subsequent entries emitted after sink error" 2 !call_count
+
+(* F3 — a sink that returns [Error] on one entry must not halt delivery of
+   subsequent entries (the result-value failure path, distinct from a raise). *)
+let test_sink_emit_error_does_not_stop_worker () =
+  Eio_main.run @@ fun env ->
+  let call_count = ref 0 in
+  let erroring_sink : Olog.Logger.sink =
+    {
+      Olog.Logger.name = "erroring";
+      emit =
+        (fun _ ->
+          incr call_count;
+          if !call_count = 1 then Error "intentional emit error" else Ok ());
+      flush = (fun () -> Ok ());
+      close = (fun () -> Ok ());
+    }
+  in
+  let config = make_config ~sinks:[ erroring_sink ] () in
+  Eio.Switch.run (fun sw ->
+      let logger = make_logger ~sw ~clock:env#clock config "test" in
+      Olog.Logger.log logger ~level:Olog.Level.Info "first";
+      Olog.Logger.log logger ~level:Olog.Level.Info "second";
+      Olog.Logger.log logger ~level:Olog.Level.Info "third";
+      Olog.Logger.flush logger);
+  Alcotest.(check int)
+    "worker keeps dispatching after a sink returns Error" 3 !call_count
+
+(* F3 — a contract-violating sink (one that raises instead of returning a
+   result) must not kill the worker; entries logged after the raise are still
+   delivered. *)
+let test_contract_violating_sink_does_not_stop_worker () =
+  Eio_main.run @@ fun env ->
+  let call_count = ref 0 in
+  let raising_sink : Olog.Logger.sink =
+    {
+      Olog.Logger.name = "raising";
+      emit =
+        (fun _ ->
+          incr call_count;
+          if !call_count = 1 then raise Exit else Ok ());
+      flush = (fun () -> Ok ());
+      close = (fun () -> Ok ());
+    }
+  in
+  let config = make_config ~sinks:[ raising_sink ] () in
+  Eio.Switch.run (fun sw ->
+      let logger = make_logger ~sw ~clock:env#clock config "test" in
+      for _ = 1 to 5 do
+        Olog.Logger.log logger ~level:Olog.Level.Info "msg"
+      done;
+      Olog.Logger.flush logger);
+  Alcotest.(check int)
+    "worker survives a raising sink and delivers later entries" 5 !call_count
+
+(* F3 — a sink failure is not merely swallowed: the worker emits an
+   operator-facing fallback line to process stderr ([report_sink_error],
+   ADR 0006 semantics) naming the failing sink and its message. Capture fd 2
+   and assert the diagnostic is actually produced — the [Error]-continues
+   behaviour is covered elsewhere; this pins the visible diagnostic itself. *)
+let test_sink_error_reports_fallback_line_to_stderr () =
+  let output =
+    capture_stderr (fun () ->
+        Eio_main.run @@ fun env ->
+        let erroring_sink : Olog.Logger.sink =
+          {
+            Olog.Logger.name = "broken-sink";
+            emit = (fun _ -> Error "disk full");
+            flush = (fun () -> Ok ());
+            close = (fun () -> Ok ());
+          }
+        in
+        let config = make_config ~sinks:[ erroring_sink ] () in
+        Eio.Switch.run (fun sw ->
+            let logger = make_logger ~sw ~clock:env#clock config "test" in
+            Olog.Logger.log logger ~level:Olog.Level.Info "msg";
+            Olog.Logger.flush logger))
+  in
+  Alcotest.(check bool)
+    "stderr fallback names the failing sink" true
+    (string_contains ~needle:"broken-sink" output);
+  Alcotest.(check bool)
+    "stderr fallback includes the sink's error message" true
+    (string_contains ~needle:"disk full" output)
 
 (* ── Group 6: drop semantics ─────────────────────────────────────────────── *)
 
@@ -272,18 +366,10 @@ let test_drop_count_increments () =
   Eio_main.run @@ fun env ->
   let drop_count_snapshot = ref 0 in
   let latch, release = Eio.Promise.create () in
-  let sink : Olog.Logger.sink =
-    {
-      Olog.Logger.emit = (fun _ -> Eio.Promise.await latch);
-      flush = (fun () -> ());
-      close = (fun () -> ());
-    }
-  in
-  let config =
-    { Olog.Logger.Config.default with queue_depth = 1; sinks = [ sink ] }
-  in
+  let sink = mk_sink ~emit:(fun _ -> Eio.Promise.await latch) () in
+  let config = make_config ~queue_depth:1 ~sinks:[ sink ] () in
   Eio.Switch.run (fun sw ->
-      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      let logger = make_logger ~sw ~clock:env#clock config "test" in
       (* entry-1: worker takes it and blocks inside sink.emit *)
       Olog.Logger.log logger ~level:Olog.Level.Info "entry-1";
       Eio.Fiber.yield ();
@@ -306,18 +392,10 @@ let test_drop_count_increments () =
 let test_log_does_not_suspend () =
   Eio_main.run @@ fun env ->
   let latch, release = Eio.Promise.create () in
-  let sink : Olog.Logger.sink =
-    {
-      Olog.Logger.emit = (fun _ -> Eio.Promise.await latch);
-      flush = (fun () -> ());
-      close = (fun () -> ());
-    }
-  in
-  let config =
-    { Olog.Logger.Config.default with queue_depth = 1; sinks = [ sink ] }
-  in
+  let sink = mk_sink ~emit:(fun _ -> Eio.Promise.await latch) () in
+  let config = make_config ~queue_depth:1 ~sinks:[ sink ] () in
   Eio.Switch.run (fun sw ->
-      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      let logger = make_logger ~sw ~clock:env#clock config "test" in
       (* entry-1: worker takes it and blocks in sink.emit *)
       Olog.Logger.log logger ~level:Olog.Level.Info "entry-1";
       Eio.Fiber.yield ();
@@ -337,16 +415,10 @@ let test_log_does_not_suspend () =
 let test_flush_waits_for_entries () =
   Eio_main.run @@ fun env ->
   let emitted = ref 0 in
-  let sink : Olog.Logger.sink =
-    {
-      Olog.Logger.emit = (fun _ -> incr emitted);
-      flush = (fun () -> ());
-      close = (fun () -> ());
-    }
-  in
-  let config = { Olog.Logger.Config.default with sinks = [ sink ] } in
+  let sink = mk_sink ~emit:(fun _ -> incr emitted) () in
+  let config = make_config ~sinks:[ sink ] () in
   Eio.Switch.run (fun sw ->
-      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      let logger = make_logger ~sw ~clock:env#clock config "test" in
       for _ = 1 to 5 do
         Olog.Logger.log logger ~level:Olog.Level.Info "msg"
       done;
@@ -358,16 +430,10 @@ let test_flush_waits_for_entries () =
 let test_flush_calls_sink_flush () =
   Eio_main.run @@ fun env ->
   let flushed = ref false in
-  let sink : Olog.Logger.sink =
-    {
-      Olog.Logger.emit = (fun _ -> ());
-      flush = (fun () -> flushed := true);
-      close = (fun () -> ());
-    }
-  in
-  let config = { Olog.Logger.Config.default with sinks = [ sink ] } in
+  let sink = mk_sink ~flush:(fun () -> flushed := true) () in
+  let config = make_config ~sinks:[ sink ] () in
   Eio.Switch.run (fun sw ->
-      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      let logger = make_logger ~sw ~clock:env#clock config "test" in
       Olog.Logger.log logger ~level:Olog.Level.Info "msg";
       Olog.Logger.flush logger;
       Alcotest.(check bool) "flush calls sink flush for each sink" true !flushed)
@@ -376,25 +442,11 @@ let test_flush_calls_sink_flush () =
 let test_flush_sink_raise_does_not_hang () =
   Eio_main.run @@ fun env ->
   let second_flushed = ref false in
-  let raising_sink : Olog.Logger.sink =
-    {
-      Olog.Logger.emit = (fun _ -> ());
-      flush = (fun () -> raise Exit);
-      close = (fun () -> ());
-    }
-  in
-  let counting_sink : Olog.Logger.sink =
-    {
-      Olog.Logger.emit = (fun _ -> ());
-      flush = (fun () -> second_flushed := true);
-      close = (fun () -> ());
-    }
-  in
-  let config =
-    { Olog.Logger.Config.default with sinks = [ raising_sink; counting_sink ] }
-  in
+  let raising_sink = mk_sink ~flush:(fun () -> raise Exit) () in
+  let counting_sink = mk_sink ~flush:(fun () -> second_flushed := true) () in
+  let config = make_config ~sinks:[ raising_sink; counting_sink ] () in
   Eio.Switch.run (fun sw ->
-      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      let logger = make_logger ~sw ~clock:env#clock config "test" in
       Olog.Logger.log logger ~level:Olog.Level.Info "msg";
       (* flush must return even though the first sink's flush raises *)
       Olog.Logger.flush logger;
@@ -408,54 +460,33 @@ let test_flush_sink_raise_does_not_hang () =
 let test_close_called_on_switch_close () =
   Eio_main.run @@ fun env ->
   let closed = ref false in
-  let sink : Olog.Logger.sink =
-    {
-      Olog.Logger.emit = (fun _ -> ());
-      flush = (fun () -> ());
-      close = (fun () -> closed := true);
-    }
-  in
-  let config = { Olog.Logger.Config.default with sinks = [ sink ] } in
+  let sink = mk_sink ~close:(fun () -> closed := true) () in
+  let config = make_config ~sinks:[ sink ] () in
   Eio.Switch.run (fun sw ->
-      let _logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      let _logger = make_logger ~sw ~clock:env#clock config "test" in
       ());
   Alcotest.(check bool) "sink close called when switch closes" true !closed
 
 (* F7 — exceptions from sink.close must not propagate out of the worker *)
 let test_close_exception_ignored () =
   Eio_main.run @@ fun env ->
-  let sink : Olog.Logger.sink =
-    {
-      Olog.Logger.emit = (fun _ -> ());
-      flush = (fun () -> ());
-      close = (fun () -> raise Exit);
-    }
-  in
-  let config = { Olog.Logger.Config.default with sinks = [ sink ] } in
+  let sink = mk_sink ~close:(fun () -> raise Exit) () in
+  let config = make_config ~sinks:[ sink ] () in
   (* If the exception propagates, Switch.run raises and the test fails *)
   Eio.Switch.run (fun sw ->
-      let _logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      let _logger = make_logger ~sw ~clock:env#clock config "test" in
       ())
 
 (* F7 — sinks are closed in the order they appear in config.sinks *)
 let test_close_in_list_order () =
   Eio_main.run @@ fun env ->
   let order = ref [] in
-  let make_sink n : Olog.Logger.sink =
-    {
-      Olog.Logger.emit = (fun _ -> ());
-      flush = (fun () -> ());
-      close = (fun () -> order := n :: !order);
-    }
-  in
+  let make_sink n = mk_sink ~close:(fun () -> order := n :: !order) () in
   let config =
-    {
-      Olog.Logger.Config.default with
-      sinks = [ make_sink 1; make_sink 2; make_sink 3 ];
-    }
+    make_config ~sinks:[ make_sink 1; make_sink 2; make_sink 3 ] ()
   in
   Eio.Switch.run (fun sw ->
-      let _logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      let _logger = make_logger ~sw ~clock:env#clock config "test" in
       ());
   Alcotest.(check (list int))
     "sinks closed in list order" [ 1; 2; 3 ] (List.rev !order)
@@ -466,24 +497,14 @@ let test_close_in_list_order () =
 let test_concurrent_log_all_emitted () =
   Eio_main.run @@ fun env ->
   let emitted = ref 0 in
-  let sink : Olog.Logger.sink =
-    {
-      Olog.Logger.emit = (fun _ -> incr emitted);
-      flush = (fun () -> ());
-      close = (fun () -> ());
-    }
-  in
+  let sink = mk_sink ~emit:(fun _ -> incr emitted) () in
   let n_fibers = 5 in
   let n_entries = 10 in
   let config =
-    {
-      Olog.Logger.Config.default with
-      queue_depth = n_fibers * n_entries;
-      sinks = [ sink ];
-    }
+    make_config ~queue_depth:(n_fibers * n_entries) ~sinks:[ sink ] ()
   in
   Eio.Switch.run (fun sw ->
-      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      let logger = make_logger ~sw ~clock:env#clock config "test" in
       Eio.Fiber.all
         (List.init n_fibers (fun _ ->
              fun () ->
@@ -498,16 +519,10 @@ let test_concurrent_log_all_emitted () =
 (* F16 — diagnostics must be safe to call concurrently with log *)
 let test_diagnostics_concurrent () =
   Eio_main.run @@ fun env ->
-  let sink : Olog.Logger.sink =
-    {
-      Olog.Logger.emit = (fun _ -> ());
-      flush = (fun () -> ());
-      close = (fun () -> ());
-    }
-  in
-  let config = { Olog.Logger.Config.default with sinks = [ sink ] } in
+  let sink = mk_sink () in
+  let config = make_config ~sinks:[ sink ] () in
   Eio.Switch.run (fun sw ->
-      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      let logger = make_logger ~sw ~clock:env#clock config "test" in
       Eio.Fiber.both
         (fun () ->
           for _ = 1 to 50 do
@@ -540,16 +555,10 @@ let field_value fields key = List.assoc_opt key fields
 let test_log_context_fields_appear () =
   Eio_main.run @@ fun env ->
   let captured = ref None in
-  let sink : Olog.Logger.sink =
-    {
-      Olog.Logger.emit = (fun entry -> captured := Some entry);
-      flush = (fun () -> ());
-      close = (fun () -> ());
-    }
-  in
-  let config = { Olog.Logger.Config.default with sinks = [ sink ] } in
+  let sink = mk_sink ~emit:(fun entry -> captured := Some entry) () in
+  let config = make_config ~sinks:[ sink ] () in
   Eio.Switch.run (fun sw ->
-      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      let logger = make_logger ~sw ~clock:env#clock config "test" in
       Olog.Context.with_context
         ~fields:[ ("request_id", Olog.Value.String "req-abc123") ]
       @@ fun () ->
@@ -565,16 +574,10 @@ let test_log_context_fields_appear () =
 let test_log_no_context_outside_scope () =
   Eio_main.run @@ fun env ->
   let captured = ref None in
-  let sink : Olog.Logger.sink =
-    {
-      Olog.Logger.emit = (fun entry -> captured := Some entry);
-      flush = (fun () -> ());
-      close = (fun () -> ());
-    }
-  in
-  let config = { Olog.Logger.Config.default with sinks = [ sink ] } in
+  let sink = mk_sink ~emit:(fun entry -> captured := Some entry) () in
+  let config = make_config ~sinks:[ sink ] () in
   Eio.Switch.run (fun sw ->
-      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      let logger = make_logger ~sw ~clock:env#clock config "test" in
       Olog.Logger.log logger ~level:Olog.Level.Info
         ~fields:[ ("key", Olog.Value.String "val") ]
         "test";
@@ -589,16 +592,10 @@ let test_log_no_context_outside_scope () =
 let test_log_callsite_overrides_context () =
   Eio_main.run @@ fun env ->
   let captured = ref None in
-  let sink : Olog.Logger.sink =
-    {
-      Olog.Logger.emit = (fun entry -> captured := Some entry);
-      flush = (fun () -> ());
-      close = (fun () -> ());
-    }
-  in
-  let config = { Olog.Logger.Config.default with sinks = [ sink ] } in
+  let sink = mk_sink ~emit:(fun entry -> captured := Some entry) () in
+  let config = make_config ~sinks:[ sink ] () in
   Eio.Switch.run (fun sw ->
-      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      let logger = make_logger ~sw ~clock:env#clock config "test" in
       Olog.Context.with_context
         ~fields:
           [
@@ -623,16 +620,10 @@ let test_log_callsite_overrides_context () =
 let test_log_exn_context_user_exn_all_present () =
   Eio_main.run @@ fun env ->
   let captured = ref None in
-  let sink : Olog.Logger.sink =
-    {
-      Olog.Logger.emit = (fun entry -> captured := Some entry);
-      flush = (fun () -> ());
-      close = (fun () -> ());
-    }
-  in
-  let config = { Olog.Logger.Config.default with sinks = [ sink ] } in
+  let sink = mk_sink ~emit:(fun entry -> captured := Some entry) () in
+  let config = make_config ~sinks:[ sink ] () in
   Eio.Switch.run (fun sw ->
-      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      let logger = make_logger ~sw ~clock:env#clock config "test" in
       Olog.Context.with_context
         ~fields:[ ("request_id", Olog.Value.String "req-abc123") ]
       @@ fun () ->
@@ -666,16 +657,10 @@ let test_log_exn_context_user_exn_all_present () =
 let test_log_exn_exn_overrides_context_and_user () =
   Eio_main.run @@ fun env ->
   let captured = ref None in
-  let sink : Olog.Logger.sink =
-    {
-      Olog.Logger.emit = (fun entry -> captured := Some entry);
-      flush = (fun () -> ());
-      close = (fun () -> ());
-    }
-  in
-  let config = { Olog.Logger.Config.default with sinks = [ sink ] } in
+  let sink = mk_sink ~emit:(fun entry -> captured := Some entry) () in
+  let config = make_config ~sinks:[ sink ] () in
   Eio.Switch.run (fun sw ->
-      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      let logger = make_logger ~sw ~clock:env#clock config "test" in
       Olog.Context.with_context
         ~fields:
           [
@@ -705,16 +690,10 @@ let test_log_exn_exn_overrides_context_and_user () =
 let test_log_nested_context_inner_wins () =
   Eio_main.run @@ fun env ->
   let captured = ref None in
-  let sink : Olog.Logger.sink =
-    {
-      Olog.Logger.emit = (fun entry -> captured := Some entry);
-      flush = (fun () -> ());
-      close = (fun () -> ());
-    }
-  in
-  let config = { Olog.Logger.Config.default with sinks = [ sink ] } in
+  let sink = mk_sink ~emit:(fun entry -> captured := Some entry) () in
+  let config = make_config ~sinks:[ sink ] () in
   Eio.Switch.run (fun sw ->
-      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      let logger = make_logger ~sw ~clock:env#clock config "test" in
       Olog.Context.with_context
         ~fields:
           [
@@ -749,16 +728,10 @@ let test_log_nested_context_inner_wins () =
 let test_shutdown_drains_all_queued_entries () =
   Eio_main.run @@ fun env ->
   let emitted = ref 0 in
-  let sink : Olog.Logger.sink =
-    {
-      Olog.Logger.emit = (fun _ -> incr emitted);
-      flush = (fun () -> ());
-      close = (fun () -> ());
-    }
-  in
-  let config = { Olog.Logger.Config.default with sinks = [ sink ] } in
+  let sink = mk_sink ~emit:(fun _ -> incr emitted) () in
+  let config = make_config ~sinks:[ sink ] () in
   Eio.Switch.run (fun sw ->
-      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      let logger = make_logger ~sw ~clock:env#clock config "test" in
       for _ = 1 to 50 do
         Olog.Logger.log logger ~level:Olog.Level.Info "msg"
       done;
@@ -770,16 +743,15 @@ let test_shutdown_calls_flush_and_close_exactly_once () =
   Eio_main.run @@ fun env ->
   let flush_count = ref 0 in
   let close_count = ref 0 in
-  let sink : Olog.Logger.sink =
-    {
-      Olog.Logger.emit = (fun _ -> ());
-      flush = (fun () -> incr flush_count);
-      close = (fun () -> incr close_count);
-    }
+  let sink =
+    mk_sink
+      ~flush:(fun () -> incr flush_count)
+      ~close:(fun () -> incr close_count)
+      ()
   in
-  let config = { Olog.Logger.Config.default with sinks = [ sink ] } in
+  let config = make_config ~sinks:[ sink ] () in
   Eio.Switch.run (fun sw ->
-      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      let logger = make_logger ~sw ~clock:env#clock config "test" in
       Olog.Logger.log logger ~level:Olog.Level.Info "msg";
       Olog.Logger.shutdown logger);
   Alcotest.(check int) "sink flush called exactly once" 1 !flush_count;
@@ -789,16 +761,10 @@ let test_shutdown_calls_flush_and_close_exactly_once () =
 let test_log_after_shutdown_is_dropped () =
   Eio_main.run @@ fun env ->
   let emitted = ref 0 in
-  let sink : Olog.Logger.sink =
-    {
-      Olog.Logger.emit = (fun _ -> incr emitted);
-      flush = (fun () -> ());
-      close = (fun () -> ());
-    }
-  in
-  let config = { Olog.Logger.Config.default with sinks = [ sink ] } in
+  let sink = mk_sink ~emit:(fun _ -> incr emitted) () in
+  let config = make_config ~sinks:[ sink ] () in
   Eio.Switch.run (fun sw ->
-      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      let logger = make_logger ~sw ~clock:env#clock config "test" in
       Olog.Logger.shutdown logger;
       let emitted_before = !emitted in
       Olog.Logger.log logger ~level:Olog.Level.Info "after-shutdown-1";
@@ -814,16 +780,10 @@ let test_log_after_shutdown_is_dropped () =
 let test_flush_after_shutdown_returns_immediately () =
   Eio_main.run @@ fun env ->
   let flush_count = ref 0 in
-  let sink : Olog.Logger.sink =
-    {
-      Olog.Logger.emit = (fun _ -> ());
-      flush = (fun () -> incr flush_count);
-      close = (fun () -> ());
-    }
-  in
-  let config = { Olog.Logger.Config.default with sinks = [ sink ] } in
+  let sink = mk_sink ~flush:(fun () -> incr flush_count) () in
+  let config = make_config ~sinks:[ sink ] () in
   Eio.Switch.run (fun sw ->
-      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      let logger = make_logger ~sw ~clock:env#clock config "test" in
       Olog.Logger.shutdown logger;
       let count_after_shutdown = !flush_count in
       Olog.Logger.flush logger;
@@ -835,16 +795,10 @@ let test_flush_after_shutdown_returns_immediately () =
 let test_shutdown_is_idempotent () =
   Eio_main.run @@ fun env ->
   let close_count = ref 0 in
-  let sink : Olog.Logger.sink =
-    {
-      Olog.Logger.emit = (fun _ -> ());
-      flush = (fun () -> ());
-      close = (fun () -> incr close_count);
-    }
-  in
-  let config = { Olog.Logger.Config.default with sinks = [ sink ] } in
+  let sink = mk_sink ~close:(fun () -> incr close_count) () in
+  let config = make_config ~sinks:[ sink ] () in
   Eio.Switch.run (fun sw ->
-      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      let logger = make_logger ~sw ~clock:env#clock config "test" in
       Olog.Logger.shutdown logger;
       Olog.Logger.shutdown logger);
   Alcotest.(check int)
@@ -853,16 +807,10 @@ let test_shutdown_is_idempotent () =
 (* F12, F19 — diagnostics reports is_shutdown *)
 let test_diagnostics_is_shutdown_flag () =
   Eio_main.run @@ fun env ->
-  let sink : Olog.Logger.sink =
-    {
-      Olog.Logger.emit = (fun _ -> ());
-      flush = (fun () -> ());
-      close = (fun () -> ());
-    }
-  in
-  let config = { Olog.Logger.Config.default with sinks = [ sink ] } in
+  let sink = mk_sink () in
+  let config = make_config ~sinks:[ sink ] () in
   Eio.Switch.run (fun sw ->
-      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      let logger = make_logger ~sw ~clock:env#clock config "test" in
       Alcotest.(check bool)
         "is_shutdown is false before shutdown" false
         (Olog.Logger.diagnostics logger).is_shutdown;
@@ -875,18 +823,15 @@ let test_diagnostics_is_shutdown_flag () =
 let test_shutdown_flushes_then_closes_in_order () =
   Eio_main.run @@ fun env ->
   let order = ref [] in
-  let make_sink id : Olog.Logger.sink =
-    {
-      Olog.Logger.emit = (fun _ -> ());
-      flush = (fun () -> order := Printf.sprintf "s%d-flush" id :: !order);
-      close = (fun () -> order := Printf.sprintf "s%d-close" id :: !order);
-    }
+  let make_sink id =
+    mk_sink
+      ~flush:(fun () -> order := Printf.sprintf "s%d-flush" id :: !order)
+      ~close:(fun () -> order := Printf.sprintf "s%d-close" id :: !order)
+      ()
   in
-  let config =
-    { Olog.Logger.Config.default with sinks = [ make_sink 1; make_sink 2 ] }
-  in
+  let config = make_config ~sinks:[ make_sink 1; make_sink 2 ] () in
   Eio.Switch.run (fun sw ->
-      let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+      let logger = make_logger ~sw ~clock:env#clock config "test" in
       Olog.Logger.shutdown logger);
   Alcotest.(check (list string))
     "shutdown flushes all sinks then closes all sinks in order"
@@ -899,19 +844,11 @@ let test_shutdown_flushes_then_closes_in_order () =
 let test_cancel_drains_remaining_queue_entries () =
   Eio_main.run @@ fun env ->
   let emitted = ref 0 in
-  let sink : Olog.Logger.sink =
-    {
-      Olog.Logger.emit = (fun _ -> incr emitted);
-      flush = (fun () -> ());
-      close = (fun () -> ());
-    }
-  in
-  let config =
-    { Olog.Logger.Config.default with queue_depth = 100; sinks = [ sink ] }
-  in
+  let sink = mk_sink ~emit:(fun _ -> incr emitted) () in
+  let config = make_config ~queue_depth:100 ~sinks:[ sink ] () in
   (try
      Eio.Switch.run (fun sw ->
-         let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+         let logger = make_logger ~sw ~clock:env#clock config "test" in
          for _ = 1 to 10 do
            Olog.Logger.log logger ~level:Olog.Level.Info "msg"
          done;
@@ -923,30 +860,14 @@ let test_cancel_drains_remaining_queue_entries () =
 let test_drain_continues_after_sink_emit_failure () =
   Eio_main.run @@ fun env ->
   let second_emitted = ref 0 in
-  let raising_sink : Olog.Logger.sink =
-    {
-      Olog.Logger.emit = (fun _ -> raise Exit);
-      flush = (fun () -> ());
-      close = (fun () -> ());
-    }
-  in
-  let counting_sink : Olog.Logger.sink =
-    {
-      Olog.Logger.emit = (fun _ -> incr second_emitted);
-      flush = (fun () -> ());
-      close = (fun () -> ());
-    }
-  in
+  let raising_sink = mk_sink ~emit:(fun _ -> raise Exit) () in
+  let counting_sink = mk_sink ~emit:(fun _ -> incr second_emitted) () in
   let config =
-    {
-      Olog.Logger.Config.default with
-      queue_depth = 100;
-      sinks = [ raising_sink; counting_sink ];
-    }
+    make_config ~queue_depth:100 ~sinks:[ raising_sink; counting_sink ] ()
   in
   (try
      Eio.Switch.run (fun sw ->
-         let logger = Olog.Logger.create ~sw ~clock:env#clock config "test" in
+         let logger = make_logger ~sw ~clock:env#clock config "test" in
          for _ = 1 to 10 do
            Olog.Logger.log logger ~level:Olog.Level.Info "msg"
          done;
@@ -956,6 +877,259 @@ let test_drain_continues_after_sink_emit_failure () =
     "second sink receives all entries despite first sink raising" 10
     !second_emitted
 
+(* ── Group 13: lifecycle liveness (RFC 0013 F1, F2) ─────────────────────── *)
+
+(* Raised by [with_timeout] when the wrapped operation fails to return within
+   the deadline. Used to convert a hang (the pre-fix failure mode) into a
+   bounded test failure rather than a stuck suite (RFC 0013 test plan). *)
+exception Test_timeout
+
+let with_timeout ~clock seconds f =
+  Eio.Fiber.first
+    (fun () -> f ())
+    (fun () ->
+      Eio.Time.sleep clock seconds;
+      raise Test_timeout)
+
+(* F1 — after the logger's switch is cancelled, the worker has terminated;
+   [flush] must return promptly instead of awaiting a resolver no worker will
+   ever fulfil (it hangs forever pre-fix). *)
+let test_flush_returns_after_switch_cancellation () =
+  Eio_main.run @@ fun env ->
+  let config = make_config () in
+  let logger_ref = ref None in
+  (try
+     Eio.Switch.run (fun sw ->
+         let logger = make_logger ~sw ~clock:env#clock config "test" in
+         logger_ref := Some logger;
+         Eio.Switch.fail sw (Failure "cancel"))
+   with Failure _ -> ());
+  let logger = Option.get !logger_ref in
+  let completed = ref false in
+  with_timeout ~clock:env#clock 2.0 (fun () ->
+      Olog.Logger.flush logger;
+      completed := true);
+  Alcotest.(check bool)
+    "flush returns after the logger's switch is cancelled" true !completed
+
+(* F1 — same liveness guarantee for [shutdown] after switch cancellation. *)
+let test_shutdown_returns_after_switch_cancellation () =
+  Eio_main.run @@ fun env ->
+  let config = make_config () in
+  let logger_ref = ref None in
+  (try
+     Eio.Switch.run (fun sw ->
+         let logger = make_logger ~sw ~clock:env#clock config "test" in
+         logger_ref := Some logger;
+         Eio.Switch.fail sw (Failure "cancel"))
+   with Failure _ -> ());
+  let logger = Option.get !logger_ref in
+  let completed = ref false in
+  with_timeout ~clock:env#clock 2.0 (fun () ->
+      Olog.Logger.shutdown logger;
+      completed := true);
+  Alcotest.(check bool)
+    "shutdown returns after the logger's switch is cancelled" true !completed
+
+(* F2 — concurrent [shutdown] from several fibers and a second domain: every
+   caller returns and the sink is closed exactly once. Looped to surface the
+   late-enqueue-after-worker-death race (RFC 0013 R5). *)
+let test_concurrent_shutdown_all_callers_return () =
+  Eio_main.run @@ fun env ->
+  let domain_mgr = env#domain_mgr in
+  for _ = 1 to 100 do
+    let close_count = Atomic.make 0 in
+    let sink = mk_sink ~close:(fun () -> Atomic.incr close_count) () in
+    let config = make_config ~sinks:[ sink ] () in
+    Eio.Switch.run (fun sw ->
+        let logger = make_logger ~sw ~clock:env#clock config "test" in
+        Eio.Fiber.all
+          ((fun () ->
+             Eio.Domain_manager.run domain_mgr (fun () ->
+                 Olog.Logger.shutdown logger))
+          :: List.init 4 (fun _ -> fun () -> Olog.Logger.shutdown logger)));
+    Alcotest.(check int)
+      "sink closed exactly once across concurrent shutdowns" 1
+      (Atomic.get close_count)
+  done
+
+(* F1, R4 — the [flush] liveness *race* arm: the worker dies after taking the
+   [Flush] message but before resolving its promise, abandoning the resolver.
+   The switch-cancellation tests above all land in [flush]'s [Stopped] fast
+   path (the worker is already dead when [flush] is called); this one drives the
+   [Fiber.first] [stopped]-wins arm, where state is [Running] at the check and
+   the worker dies mid-flush. A sink whose [flush] raises [Eio.Cancel.Cancelled]
+   on its first call makes the worker take its cancellation exit (re-raised by
+   [run_sink_op]) without ever resolving the in-flight [Flush] resolver; the
+   worker's [finally] still resolves [stopped], so [flush] must return via the
+   [stopped] arm rather than awaiting a promise no worker will fulfil. The
+   second [flush] call (from the cancellation drain) succeeds, so the worker
+   stops cleanly without failing the switch. *)
+let test_flush_returns_when_worker_dies_mid_flush () =
+  Eio_main.run @@ fun env ->
+  let flush_calls = ref 0 in
+  let sink =
+    mk_sink
+      ~flush:(fun () ->
+        incr flush_calls;
+        if !flush_calls = 1 then
+          raise (Eio.Cancel.Cancelled (Failure "simulated sink cancellation")))
+      ()
+  in
+  let config = make_config ~sinks:[ sink ] () in
+  Eio.Switch.run (fun sw ->
+      let logger = make_logger ~sw ~clock:env#clock config "test" in
+      let completed = ref false in
+      with_timeout ~clock:env#clock 2.0 (fun () ->
+          Olog.Logger.flush logger;
+          completed := true);
+      Alcotest.(check bool)
+        "flush returns when the worker dies mid-flush" true !completed)
+
+(* ── Group 14: conservation accounting (RFC 0013 F5) ────────────────────── *)
+
+(* Each producer runs its entry loop on its own domain, so the producers run
+   in genuine parallel with the worker and with [shutdown]/cancellation on the
+   main domain. Single-domain Eio scheduling is cooperative — [log]'s fast path
+   has no suspension point, so the accounting races these tests target only
+   surface under true parallelism (RFC 0013 R1, R5). [submitted] is incremented
+   once per completed [log] call; a call cut short by cancellation never
+   increments it, so [submitted] always equals the number of accepted entries. *)
+let conservation_producers ~domain_mgr ~submitted ~logger ~m_producers
+    ~k_entries =
+  Eio.Fiber.all
+    (List.init m_producers (fun _ ->
+         fun () ->
+          Eio.Domain_manager.run domain_mgr (fun () ->
+              for _ = 1 to k_entries do
+                Olog.Logger.log logger ~level:Olog.Level.Info "msg";
+                Atomic.incr submitted
+              done)))
+
+(* F5 — every entry accepted by [log] is either dispatched to the sinks or
+   counted in [drop_count], even under parallel producers and a mid-stream
+   [shutdown]. Verified entirely from outside: a test-side [submitted] counter,
+   a counting sink ([emitted]), and [diagnostics.drop_count]. With [queue_depth]
+   far smaller than the total entry count, most entries are dropped, exercising
+   both the queue-full and the post-shutdown accounting paths. Pre-fix, a [Log]
+   enqueued after [Shutdown] is silently discarded by the worker's trailing
+   drain, so [submitted > emitted + drop_count] and the invariant breaks. *)
+let test_conservation_under_concurrent_load () =
+  Eio_main.run @@ fun env ->
+  let domain_mgr = env#domain_mgr in
+  let m_producers = 8 in
+  let k_entries = 1000 in
+  let submitted = Atomic.make 0 in
+  let emitted = Atomic.make 0 in
+  let sink = mk_sink ~emit:(fun _ -> Atomic.incr emitted) () in
+  let config = make_config ~queue_depth:16 ~sinks:[ sink ] () in
+  let drop_count = ref (-1) in
+  Eio.Switch.run (fun sw ->
+      let logger = make_logger ~sw ~clock:env#clock config "test" in
+      Eio.Fiber.both
+        (fun () ->
+          conservation_producers ~domain_mgr ~submitted ~logger ~m_producers
+            ~k_entries)
+        (fun () ->
+          (* Let producers start contending, then shut down mid-stream. *)
+          Eio.Fiber.yield ();
+          Olog.Logger.shutdown logger);
+      drop_count := (Olog.Logger.diagnostics logger).drop_count);
+  Alcotest.(check int)
+    "conservation: submitted = emitted + drop_count under concurrent shutdown"
+    (Atomic.get submitted)
+    (Atomic.get emitted + !drop_count)
+
+(* F5 + F1 — the same conservation invariant must hold when the logger's switch
+   is cancelled mid-stream instead of a graceful [shutdown]. The worker's
+   cancellation drain must set [Stopped] under the producer mutex before
+   draining, so every [Log] is either drained-and-emitted or seen as [Stopped]
+   and counted as a drop — none lost. Pre-fix, the drain neither sets [Stopped]
+   first nor counts stragglers, so parallel producers slip entries past the
+   drain and the invariant breaks. *)
+let test_conservation_after_cancellation () =
+  Eio_main.run @@ fun env ->
+  let domain_mgr = env#domain_mgr in
+  let m_producers = 8 in
+  let k_entries = 1000 in
+  let submitted = Atomic.make 0 in
+  let emitted = Atomic.make 0 in
+  let sink = mk_sink ~emit:(fun _ -> Atomic.incr emitted) () in
+  let config = make_config ~queue_depth:16 ~sinks:[ sink ] () in
+  let logger_ref = ref None in
+  (try
+     Eio.Switch.run (fun sw ->
+         let logger = make_logger ~sw ~clock:env#clock config "test" in
+         logger_ref := Some logger;
+         Eio.Fiber.both
+           (fun () ->
+             conservation_producers ~domain_mgr ~submitted ~logger ~m_producers
+               ~k_entries)
+           (fun () ->
+             Eio.Fiber.yield ();
+             Eio.Switch.fail sw (Failure "cancel")))
+   with Failure _ -> ());
+  let logger = Option.get !logger_ref in
+  let drop_count = (Olog.Logger.diagnostics logger).drop_count in
+  Alcotest.(check int)
+    "conservation: submitted = emitted + drop_count under cancellation"
+    (Atomic.get submitted)
+    (Atomic.get emitted + drop_count)
+
+(* ── Group: timestamp fallback (RFC 0013 F6) ─────────────────────────────── *)
+
+(* F6 — [Fail] mode probes the clock once at [create] and rejects an
+   unrepresentable reading, rather than forking a worker that would silently
+   stamp [Ptime.epoch] on every entry for the lifetime of the logger. *)
+let test_create_fail_mode_rejects_broken_clock () =
+  Eio_main.run @@ fun _env ->
+  Eio.Switch.run (fun sw ->
+      let clock = mock_clock (ref Float.nan) in
+      let config = make_config ~timestamp_fallback:Olog.Logger.Fail () in
+      let result = Olog.Logger.create ~sw ~clock config "test" in
+      Alcotest.(check bool)
+        "create returns Error for a broken clock in Fail mode" true
+        (match result with Ok _ -> false | Error _ -> true))
+
+(* F6 — the [Fail] probe gates only on an unrepresentable reading: a valid
+   clock must pass it and yield a working logger. [create] owns both arms of
+   its Ok/Error collapse, so the accept arm is pinned here, not left to
+   transitive coverage. *)
+let test_create_fail_mode_accepts_valid_clock () =
+  Eio_main.run @@ fun _env ->
+  Eio.Switch.run (fun sw ->
+      let clock = mock_clock (ref 1_700_000_000.0) in
+      let config = make_config ~timestamp_fallback:Olog.Logger.Fail () in
+      let result = Olog.Logger.create ~sw ~clock config "test" in
+      Alcotest.(check bool)
+        "create accepts a representable clock in Fail mode" true
+        (match result with Ok _ -> true | Error _ -> false))
+
+(* F6 — default [Mark_invalid]: a clock that breaks after creation must not
+   lose the entry. It is stamped with [Ptime.epoch] and flagged with the
+   reserved [olog.invalid_timestamp] marker so the corruption is detectable
+   downstream. *)
+let test_log_marks_invalid_timestamp_by_default () =
+  Eio_main.run @@ fun _env ->
+  let captured = ref None in
+  let sink = mk_sink ~emit:(fun entry -> captured := Some entry) () in
+  let config = make_config ~sinks:[ sink ] () in
+  let clk = ref 1_700_000_000.0 in
+  Eio.Switch.run (fun sw ->
+      let clock = mock_clock clk in
+      let logger = make_logger ~sw ~clock config "test" in
+      clk := Float.nan;
+      Olog.Logger.log logger ~level:Olog.Level.Info "after clock break";
+      Olog.Logger.flush logger);
+  let entry = Option.get !captured in
+  Alcotest.(check bool)
+    "unrepresentable timestamp is stamped with the epoch" true
+    (Ptime.equal entry.Olog.Entry.timestamp Ptime.epoch);
+  Alcotest.(check opt_value)
+    "reserved invalid-timestamp marker is appended"
+    (Some (Olog.Value.Bool true))
+    (field_value entry.Olog.Entry.fields "olog.invalid_timestamp")
+
 (* ── runner ──────────────────────────────────────────────────────────────── *)
 
 let () =
@@ -963,12 +1137,8 @@ let () =
     [
       ( "Config",
         [
-          Alcotest.test_case "default min_level is Info" `Quick
-            test_config_default_min_level;
-          Alcotest.test_case "default queue_depth is 1024" `Quick
-            test_config_default_queue_depth;
-          Alcotest.test_case "default sinks is empty list" `Quick
-            test_config_default_sinks;
+          Alcotest.test_case "make rejects nonpositive queue_depth" `Quick
+            test_config_make_rejects_nonpositive_queue_depth;
         ] );
       ( "is_enabled",
         [
@@ -1009,6 +1179,12 @@ let () =
             test_log_continues_after_sink_raise;
           Alcotest.test_case "subsequent entries emitted after sink error"
             `Quick test_log_next_entry_after_raise;
+          Alcotest.test_case "sink emit Error does not stop worker" `Quick
+            test_sink_emit_error_does_not_stop_worker;
+          Alcotest.test_case "contract-violating sink does not stop worker"
+            `Quick test_contract_violating_sink_does_not_stop_worker;
+          Alcotest.test_case "sink error reports fallback line to stderr" `Quick
+            test_sink_error_reports_fallback_line_to_stderr;
         ] );
       ( "drop",
         [
@@ -1083,5 +1259,33 @@ let () =
             test_cancel_drains_remaining_queue_entries;
           Alcotest.test_case "drain continues after sink emit failure" `Quick
             test_drain_continues_after_sink_emit_failure;
+        ] );
+      ( "lifecycle",
+        [
+          Alcotest.test_case "flush returns after switch cancellation" `Quick
+            test_flush_returns_after_switch_cancellation;
+          Alcotest.test_case "shutdown returns after switch cancellation" `Quick
+            test_shutdown_returns_after_switch_cancellation;
+          Alcotest.test_case "concurrent shutdown all callers return" `Quick
+            test_concurrent_shutdown_all_callers_return;
+          Alcotest.test_case "flush returns when worker dies mid-flush" `Quick
+            test_flush_returns_when_worker_dies_mid_flush;
+        ] );
+      ( "conservation",
+        [
+          Alcotest.test_case "submitted = emitted + drops under concurrent load"
+            `Quick test_conservation_under_concurrent_load;
+          Alcotest.test_case "submitted = emitted + drops after cancellation"
+            `Quick test_conservation_after_cancellation;
+        ] );
+      ( "timestamp",
+        [
+          Alcotest.test_case "Fail mode rejects a broken clock at create" `Quick
+            test_create_fail_mode_rejects_broken_clock;
+          Alcotest.test_case "Fail mode accepts a valid clock at create" `Quick
+            test_create_fail_mode_accepts_valid_clock;
+          Alcotest.test_case
+            "Mark_invalid stamps epoch and marker on broken clock" `Quick
+            test_log_marks_invalid_timestamp_by_default;
         ] );
     ]

@@ -1,6 +1,7 @@
 # ADR 0003: `now : unit -> Ptime.t` Closure for Clock Injection
 
-**Status:** Accepted
+**Status:** Accepted (amended by RFC 0013, 2026-06-13 — closure returns
+`Ptime.t option`; fallback policy moved to the logger)
 **Date:** 2026-02-18
 **RFC:** docs/rfcs/0003-logger-async-worker.md
 
@@ -79,3 +80,35 @@ fixed_time` suffices).
 - `Ptime.of_float_s` can return `None` for timestamps outside the valid range
   (year 0–9999). The fallback to `Ptime.epoch` is silent. Valid Eio clocks
   never produce such values; the fallback is unreachable in practice.
+
+## Amendment (RFC 0013, 2026-06-13)
+
+RFC 0013 changes the closure's type from `unit -> Ptime.t` to
+`unit -> Ptime.t option` and moves the unrepresentable-timestamp policy out of
+the closure and into the logger. The closure now returns `None` when
+`Ptime.of_float_s` cannot represent the clock reading, instead of silently
+substituting `Ptime.epoch`:
+
+```ocaml
+let now () = Eio.Time.now clock |> Ptime.of_float_s in
+```
+
+The substance of this ADR — injecting the clock as a captured closure to avoid
+storing the polymorphic `_ Eio.Time.clock` bound in a concrete record field —
+stands unchanged. Only the closure's return type and the *location* of the
+fallback policy move.
+
+The silent-epoch fallback described under **Consequences → Harder** is
+superseded. `Logger` now applies an explicit `timestamp_fallback` policy at the
+call site instead of inside the closure:
+
+- `Mark_invalid` (the default): on `None`, stamp `Ptime.epoch` and append the
+  reserved field `("olog.invalid_timestamp", Value.Bool true)`, so the
+  substitution is machine-detectable downstream rather than silent.
+- `Fail`: `Logger.create` probes the clock once and returns `Error` if the
+  reading is already unrepresentable; a residual failure after a successful
+  probe falls back to the `Mark_invalid` behaviour, because `log` must never
+  raise.
+
+See RFC 0013 §Design (Timestamps, F6) and the public `Logger.timestamp_fallback`
+type.

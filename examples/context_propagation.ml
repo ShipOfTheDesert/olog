@@ -10,10 +10,20 @@ let () =
   Eio_main.run @@ fun env ->
   Eio.Switch.run @@ fun sw ->
   let sink = Output.to_sink (Output.stdout ~env ~formatter:Formatter.json ()) in
+  let config =
+    match
+      Logger.Config.make ~min_level:Level.Info ~queue_depth:1024 ~sinks:[ sink ]
+        ()
+    with
+    | Ok config -> config
+    | Error msg -> failwith msg
+  in
   let logger =
-    Logger.create ~sw ~clock:(Eio.Stdenv.clock env)
-      { Logger.Config.default with sinks = [ sink ] }
-      "context_demo"
+    match
+      Logger.create ~sw ~clock:(Eio.Stdenv.clock env) config "context_demo"
+    with
+    | Ok logger -> logger
+    | Error msg -> failwith msg
   in
   (* Top-level context: request_id is attached to every log in this scope *)
   Context.with_context ~fields:[ ("request_id", Value.String "req-001") ]

@@ -1,6 +1,7 @@
 # ADR 0007: Continue draining after `sink.emit` failure during drain-on-cancel
 
-**Status:** Accepted
+**Status:** Accepted (amended by RFC 0013, 2026-06-13 — continue-on-failure via
+result match; `Eio.Cancel.Cancelled` always re-raised)
 **Date:** 2026-02-20
 **RFC:** docs/rfcs/0011-graceful-shutdown-and-drain.md
 
@@ -121,3 +122,32 @@ let rec drain () =
 - Drain metrics: expose the number of entries drained and the number of
   sink failures during drain in `Logger.diagnostics`. Enables operators to
   answer "did we lose entries during shutdown?"
+
+## Amendment (RFC 0013, 2026-06-13)
+
+RFC 0013 redesigns the sink contract: `emit`/`flush`/`close` now return
+`(unit, string) result` instead of raising on expected failures. The
+continue-on-failure decision recorded here stands — the worker still drains and
+dispatches every remaining entry after a sink failure, on both the normal and
+the drain-on-cancel paths — but the mechanism and two details change:
+
+- **Continue-on-failure is now driven by a result match, not a blanket
+  `try … with _ -> ()`.** On `Ok ()` the worker proceeds; on `Error msg` it
+  writes a fallback line to process stderr (the ADR 0006 semantics, relocated
+  from `Output.protect` into the worker) and proceeds to the next entry. A sink
+  that *raises* rather than returning `Error` is a contract violation; the
+  worker still tolerates it and continues, but through one narrow handler rather
+  than a catch-all.
+- **`Eio.Cancel.Cancelled` is always re-raised, never swallowed.** The old
+  `with _ -> ()` guard caught cancellation too, which broke switch-cancellation
+  liveness (ANALYSIS finding F3, RFC 0013 F1/F3). The replacement handler matches
+  `Eio.Cancel.Cancelled _ as c -> raise c` and reports every other exception, so
+  cancellation propagates and lets the worker shut down while all other failures
+  are isolated.
+
+The illustrative pseudocode under **Decision** is superseded: the `try … with _`
+guard is gone, and `Shutdown` no longer carries a resolver (every shutdown
+caller awaits the worker's `stopped` promise). Because the same result-matching
+dispatch runs on both the normal and the drain-on-cancel paths, the
+consistency-with-normal-operation argument under **Rationale** is preserved. See
+RFC 0013 §Design (Sink dispatch, F3).

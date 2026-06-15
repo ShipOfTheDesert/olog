@@ -14,13 +14,19 @@
         let sink =
           Output.to_sink (Output.stdout ~env ~formatter:Formatter.json ())
         in
+        let ( let* ) = Result.bind in
         let logger =
-          Logger.create ~sw ~clock:(Eio.Stdenv.clock env)
-            { Logger.Config.default with sinks = [ sink ] }
-            "app"
+          let* config =
+            Logger.Config.make ~min_level:Level.Info ~queue_depth:1024
+              ~sinks:[ sink ] ()
+          in
+          Logger.create ~sw ~clock:(Eio.Stdenv.clock env) config "app"
         in
-        Context.with_context ~fields:[ ("request_id", Value.String "abc") ]
-        @@ fun () -> Logger.log logger ~level:Level.Info "server started"
+        match logger with
+        | Error msg -> failwith msg
+        | Ok logger ->
+            Context.with_context ~fields:[ ("request_id", Value.String "abc") ]
+            @@ fun () -> Logger.log logger ~level:Level.Info "server started"
     ]}
 
     With the [olog_ppx] preprocessor the last call shortens to:

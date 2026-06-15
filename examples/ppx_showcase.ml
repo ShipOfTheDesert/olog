@@ -15,10 +15,18 @@ let () =
   Eio_main.run @@ fun env ->
   Eio.Switch.run @@ fun sw ->
   let sink = Output.to_sink (Output.stdout ~env ~formatter:Formatter.json ()) in
+  let config =
+    match
+      Logger.Config.make ~min_level:Level.Trace ~queue_depth:1024
+        ~sinks:[ sink ] ()
+    with
+    | Ok config -> config
+    | Error msg -> failwith msg
+  in
   let logger =
-    Logger.create ~sw ~clock:(Eio.Stdenv.clock env)
-      { Logger.Config.default with min_level = Level.Trace; sinks = [ sink ] }
-      "ppx_demo"
+    match Logger.create ~sw ~clock:(Eio.Stdenv.clock env) config "ppx_demo" with
+    | Ok logger -> logger
+    | Error msg -> failwith msg
   in
   (* Basic: string and int literals are auto-wrapped to Value.String / Value.Int *)
   [%log.info logger "server started" [ ("port", 8080); ("host", "0.0.0.0") ]];

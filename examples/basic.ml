@@ -4,10 +4,18 @@ let () =
   Eio_main.run @@ fun env ->
   Eio.Switch.run @@ fun sw ->
   let sink = Output.to_sink (Output.stdout ~env ~formatter:Formatter.text ()) in
+  let config =
+    match
+      Logger.Config.make ~min_level:Level.Info ~queue_depth:1024 ~sinks:[ sink ]
+        ()
+    with
+    | Ok config -> config
+    | Error msg -> failwith msg
+  in
   let logger =
-    Logger.create ~sw ~clock:(Eio.Stdenv.clock env)
-      { Logger.Config.default with sinks = [ sink ] }
-      "basic"
+    match Logger.create ~sw ~clock:(Eio.Stdenv.clock env) config "basic" with
+    | Ok logger -> logger
+    | Error msg -> failwith msg
   in
   Logger.log logger ~level:Level.Info "server starting";
   Logger.log logger ~level:Level.Warn "low disk space"

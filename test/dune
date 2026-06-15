@@ -8,7 +8,7 @@
   test_formatter
   test_output
   test_log_exn)
- (libraries olog alcotest eio_main yojson))
+ (libraries olog alcotest eio_main yojson unix))
 
 (test
  (name test_ppx)

@@ -21,10 +21,21 @@ let () =
   let stderr_sink =
     Output.to_sink (Output.stderr ~env ~formatter:Formatter.text ())
   in
+  let config =
+    match
+      Logger.Config.make ~min_level:Level.Info ~queue_depth:1024
+        ~sinks:[ sink; stderr_sink ] ()
+    with
+    | Ok config -> config
+    | Error msg -> failwith msg
+  in
   let logger =
-    Logger.create ~sw ~clock:(Eio.Stdenv.clock env)
-      { Logger.Config.default with sinks = [ sink; stderr_sink ] }
-      "custom_output_demo"
+    match
+      Logger.create ~sw ~clock:(Eio.Stdenv.clock env) config
+        "custom_output_demo"
+    with
+    | Ok logger -> logger
+    | Error msg -> failwith msg
   in
   [%log.info logger "event one" [ ("key", "value") ]];
   [%log.warn logger "event two" [ ("count", 42) ]];

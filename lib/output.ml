@@ -1,31 +1,27 @@
-type t = { name : string; write : Entry.t list -> unit; close : unit -> unit }
-
-(* ── Error safety ─────────────────────────────────────────────────────────── *)
-
-(* Write a best-effort error line to process stderr.
-   Uses Printf.eprintf rather than Eio.Stdenv.stderr because Output.make has
-   no access to env; Stdlib stderr is the raw process stream and acceptable for
-   error reporting (not subject to the NF4 prohibition on file access). *)
-let write_fallback_error name exn =
-  try Printf.eprintf "[olog error] %s: %s\n%!" name (Printexc.to_string exn)
-  with _ -> ()
-
-(* Wrap write body; re-raise Eio cancellation so the worker can shut down. *)
-let protect name f =
-  try f () with
-  | Eio.Cancel.Cancelled _ as e -> raise e
-  | exn -> write_fallback_error name exn
+type t = {
+  name : string;
+  write : Entry.t list -> (unit, string) result;
+  close : unit -> (unit, string) result;
+}
 
 (* ── Output.make ─────────────────────────────────────────────────────────── *)
 
+(* Convert flow exceptions to [Error] at this boundary so the worker can match
+   on a value. [Eio.Cancel.Cancelled] is re-raised so cancellation still
+   propagates to the worker; the fallback stderr line now lives in the worker
+   (ADR 0006, relocated). *)
 let make ~name ~formatter flow =
   {
     name;
     write =
       (fun entries ->
-        protect name (fun () ->
-            List.iter (fun e -> Eio.Flow.copy_string (formatter e) flow) entries));
-    close = (fun () -> ());
+        try
+          List.iter (fun e -> Eio.Flow.copy_string (formatter e) flow) entries;
+          Ok ()
+        with
+        | Eio.Cancel.Cancelled _ as exn -> raise exn
+        | exn -> Error (Printexc.to_string exn));
+    close = (fun () -> Ok ());
   }
 
 (* ── Output.stdout / Output.stderr ──────────────────────────────────────── *)
@@ -40,7 +36,8 @@ let stderr ~env ~formatter () =
 
 let to_sink output =
   {
-    Logger.emit = (fun entry -> output.write [ entry ]);
-    flush = (fun () -> ());
+    Logger.name = output.name;
+    emit = (fun entry -> output.write [ entry ]);
+    flush = (fun () -> Ok ());
     close = (fun () -> output.close ());
   }

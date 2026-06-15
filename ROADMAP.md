@@ -46,6 +46,29 @@ Implemented: docs/rfcs/0011-graceful-shutdown-and-drain.md
 
 ---
 
+### Logger Lifecycle and Accounting Correctness
+
+PRD: docs/prds/0012-logger-lifecycle-and-accounting-correctness.md
+RFC: docs/rfcs/0013-logger-lifecycle-and-accounting-correctness.md
+
+Fixes the liveness and accounting bugs documented in ANALYSIS.md: flush and
+shutdown deadlocks after switch cancellation, the concurrent-shutdown race,
+swallowed cancellation in sink dispatch, unvalidated configuration, uncounted
+entry loss, and the silent epoch timestamp fallback.
+
+---
+
+### Formatter Output Correctness
+
+PRD: docs/prds/0014-formatter-output-correctness.md (RFC pending)
+
+Fixes the output-correctness bugs documented in ANALYSIS.md: duplicate JSON
+keys, log-line forging via unescaped newlines in logfmt and text output, and
+float precision loss. Changes observable output, so it must land before the
+first tagged release. Sequenced after PRD 0012.
+
+---
+
 ## Tier 2
 
 Operator ergonomics and ecosystem. Complete after Tier 1 is stable.
@@ -71,6 +94,12 @@ unlocks external contributors and real-world testing.
   tagged identically.
 - Replace placeholder values in `dune-project` (`yourhandle`, `Your Name`,
   `you@example.com`) with real values before tagging.
+- Remove the `bin/` scaffold executable: it is "Hello, World!" with
+  `(public_name olog)`, so the package currently installs a junk `olog`
+  binary.
+- The README is stale (calls implemented features "planned", wrong test
+  count, `Entry`-level quick start instead of the `Logger`/PPX API) — rewrite
+  against the actual API as part of this work.
 
 ---
 
@@ -137,6 +166,14 @@ OpenTelemetry.
 - OpenTelemetry meter integration would be a separate optional package
   (`olog-otel`), not part of the core library, to avoid a mandatory OTLP
   dependency.
+- Worker batching belongs with this work: `Output.t.write` already takes
+  `Entry.t list` but is only ever called with single entries, so the worker
+  performs one write syscall per entry. Greedily draining the queue into one
+  `write` call per wake-up pairs naturally with emit-count and bytes-written
+  counters (see ANALYSIS.md "dead generality").
+- Splitting `drop_count` by cause (queue-full vs. post-shutdown vs.
+  cancellation loss) also belongs here — a single counter conflates distinct
+  operational signals (see ANALYSIS.md).
 
 ---
 
@@ -163,6 +200,24 @@ affecting users who only need file or stdout output.
 - Authentication: API key via `Authorization` header is the common case. The
   RFC should define how credentials are injected (function parameter, not
   environment variable, to keep the library pure).
+
+---
+
+### Failure-Pattern Lessons Library
+
+ANALYSIS.md proposes a `docs/lessons/` library mirroring the ADR pattern but
+for failure patterns: after each bug class is fixed, record the symptom, the
+root cause, and the rule that prevents recurrence.
+
+**Tradeoffs and things to consider:**
+- Every lesson must state its enforcement rung (type system > test > lint/CI
+  > review checklist > prose) and justify staying at "checklist" if nothing
+  stronger exists.
+- Checklist-rung rules feed CONTRIBUTING.md's Review Checklist so they are
+  applied at every PR rather than relying on memory.
+- Candidate first entries (from ANALYSIS.md): CAS-only atomics transitions,
+  no catch-all exception handlers, one-serializer-per-type,
+  mli-claims-need-tests, formatters-ship-round-trip-tests.
 
 ---
 
@@ -216,6 +271,20 @@ application logging configuration.
 - Interaction with `Eio.Switch`: registered loggers hold resources (worker
   fiber, file handles). The registry must track which switch each logger was
   created under and handle switch cancellation gracefully.
+
+---
+
+### Context Inheritance Decision
+
+Must be resolved before OpenTelemetry Trace Context Propagation. ADR 0002
+chose deliberate non-inheritance: forked fibers start with an empty context.
+OTel trace propagation almost always wants inheritance (a request's
+`trace_id` should follow `Fiber.both` branches), and the README currently
+advertises automatic propagation to child fibers — the opposite of the
+implementation. Retrofitting inheritance onto raw effects means switching to
+`Eio.Fiber.with_binding` or threading context explicitly — an API break, so
+this must be decided before the context API is considered stable (see
+ANALYSIS.md).
 
 ---
 
