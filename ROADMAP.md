@@ -1,7 +1,11 @@
 # olog Roadmap
 
-Planned RFCs in priority order. Each tier represents a cohesive phase of work;
-all items in a tier should be completed before the next tier begins.
+Planned features in priority order. Each tier represents a cohesive phase of
+work; all items in a tier should be completed before the next tier begins.
+
+Planning now uses a single feature doc per item (docs/features/NNNN-*.md); the
+legacy PRD/RFC pointers below are historical. See
+docs/adrs/0015-workflow-migration-to-feature-docs.md.
 
 ---
 
@@ -60,7 +64,8 @@ entry loss, and the silent epoch timestamp fallback.
 
 ### Formatter Output Correctness
 
-PRD: docs/prds/0014-formatter-output-correctness.md (RFC pending)
+Legacy PRD (to be replanned as a feature doc in docs/features/):
+docs/prds/0014-formatter-output-correctness.md
 
 Fixes the output-correctness bugs documented in ANALYSIS.md: duplicate JSON
 keys, log-line forging via unescaped newlines in logfmt and text output, and
@@ -120,7 +125,7 @@ diagnose a live issue without a restart — is a basic production requirement.
   per-sink is more flexible but requires the worker to re-check level against
   each sink on each entry.
 - A signal-based trigger (e.g. SIGUSR1 cycles through levels) is useful but out
-  of scope for this RFC — note it as a `(* FUTURE *)`.
+  of scope for this feature — note it as a `(* FUTURE *)`.
 
 ---
 
@@ -140,7 +145,7 @@ a single misconfigured log call degrades the entire logging pipeline.
 - The PPX can inject sampling at compile time: `[%log.debug ~sample:0.01 logger
   "msg"]` generates a `Random.float 1.0 < 0.01 &&` guard before `is_enabled`.
   This avoids runtime overhead for unsampled calls entirely. Consider whether
-  the RFC should be a library feature, a PPX feature, or both.
+  the feature doc should make this a library feature, a PPX feature, or both.
 - Rate limiting state is mutable and shared across fibers; justify with
   `(* mutable: rate limiter token bucket *)` per Article X.1.
 
@@ -191,14 +196,14 @@ affecting users who only need file or stdout output.
   separation pattern.
 - Minimum viable implementation: persistent connection, synchronous send per
   entry, basic error logging to stderr on failure. Robustness (retry, backoff,
-  circuit breaker) is explicitly deferred — the RFC should mark these as
-  `(* FUTURE *)` items with a reference to a follow-up RFC.
+  circuit breaker) is explicitly deferred — the feature doc should mark these as
+  `(* FUTURE *)` items with a reference to a follow-up feature.
 - HTTP target format: NDJSON (one JSON object per line, matching
   `Formatter.json` output) is the most broadly supported format for log
   aggregators (Loki, Elasticsearch, Datadog). Confirm the target format before
   designing the API.
 - Authentication: API key via `Authorization` header is the common case. The
-  RFC should define how credentials are injected (function parameter, not
+  feature doc should define how credentials are injected (function parameter, not
   environment variable, to keep the library pure).
 
 ---
@@ -242,7 +247,7 @@ in a running container without recompiling.
 - Format for `OLOG_LEVEL`: case-insensitive string (`"debug"`, `"DEBUG"`).
   Invalid values should log a warning to stderr and fall back to `Info`.
 - A file-based config (JSON or TOML) enables per-subsystem level overrides but
-  requires a parsing dependency. Decide whether this RFC covers file-based
+  requires a parsing dependency. Decide whether this feature covers file-based
   config or only environment variables.
 - This feature interacts with Dynamic Level Filtering (Tier 2): if the level
   can be set from the environment at startup, the same mechanism should support
@@ -301,7 +306,7 @@ correlated with distributed traces without ad hoc field-naming agreements.
 - A separate `olog-otel` package could provide a typed `Trace_context.t` that
   serialises to the W3C `traceparent` format and integrates with an OTLP
   exporter. This keeps OTLP off the core dependency graph.
-- The RFC should decide whether `trace_id` and `span_id` are `Value.String`
+- The feature doc should decide whether `trace_id` and `span_id` are `Value.String`
   (hex-encoded) or whether a new `Value.Bytes` constructor is needed. Hex
   strings are simpler; `Bytes` would require extending `Value.t`.
 
