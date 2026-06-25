@@ -17,6 +17,8 @@ depends: [
   "eio_main" {with-test & >= "1.0"}
   "alcotest" {with-test & >= "1.7"}
   "yojson" {with-test & >= "2.1"}
+  "qcheck-core" {with-test & >= "0.21"}
+  "qcheck-alcotest" {with-test & >= "0.21"}
   "odoc" {with-doc}
 ]
 build: [

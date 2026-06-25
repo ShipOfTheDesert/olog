@@ -74,6 +74,64 @@ first tagged release. Sequenced after PRD 0012.
 
 ---
 
+### logfmt Key Escaping and Reserved-Key Collision
+
+Follow-up surfaced during Feature 0016 (Formatter Output Correctness). That
+feature closed the line-forging and duplicate-key vectors for field *values*,
+the message, and the JSON envelope, but `Formatter.logfmt` still emits field
+*keys* raw and always prints the fixed keys `ts`/`level`/`msg`. A field whose
+key contains a space, `=`, a quote, or a newline — or whose key equals a fixed
+key — can forge or duplicate a logfmt token. This is the logfmt analogue of the
+JSON duplicate-key finding (ANALYSIS finding 4). Reachable only via the direct
+`~fields` API; PPX-generated keys are always safe identifiers. Changes
+observable output, so it belongs before the first tagged release.
+
+**Tradeoffs and things to consider:**
+- Escaping keys (quote keys containing space/`=`/quote/newline) closes the
+  forging vector but is non-standard logfmt and the round-trip parser must learn
+  quoted keys; it does *not* resolve the fixed-key duplicate.
+- Resolving the fixed-key collision needs a reserved-key/rename policy — the
+  exact complexity Decision 1 avoided for JSON by nesting under `"fields"`.
+- Alternatively, validate keys at the `~fields` API boundary (rejecting
+  non-identifier keys), which keeps the formatter simple but changes the
+  `Value`/`Entry` ingestion contract.
+
+---
+
+### Value: Non-Finite Floats Unrepresentable
+
+Follow-up surfaced during Feature 0016 (Formatter Output Correctness). A
+non-finite float field value (NaN, ∞, −∞) has no standard-JSON representation,
+so `Formatter.json` raises `Yojson.Json_error`; at a sink the entry is caught
+and dropped (with a stderr diagnostic), while `logfmt`/`text` still render it as
+`nan`/`inf`/`-inf`. This asymmetry contradicts FR1's "well-formed record per
+entry for arbitrary content." 0016 documented the limitation; this feature
+removes it at the source. Changes the public `Value` API, so it must land before
+the first tagged release.
+
+**Chosen approach (design settled during 0016 review):** make the illegal state
+unrepresentable at the `Value` constructor — the one chokepoint every
+construction path (PPX, direct, record-literal, `Value.of_yojson`) must cross,
+since `Entry.create` is *not* a sufficient gate (the `Entry.t` record is public
+and the JSON parse path manufactures `inf` from overflow literals).
+
+- Make `Value.t` `private` and add smart constructors (`string`/`int`/`float`/
+  `bool`/`null`); `Value.float` coerces a non-finite input to its string form
+  (`"nan"`/`"inf"`/`"-inf"`), so `logfmt`/`text` output is unchanged and `json`
+  becomes total. `private` keeps pattern-matching open (only construction
+  changes).
+- Blast radius: PPX emits smart-constructor applications instead of
+  `pexp_construct`; `Value.of_yojson` routes its `` `Float `` arm through
+  `Value.float`; ~140 construction sites across lib/tests/examples migrate from
+  `Value.X e` to `Value.x e`. Deconstruction sites are unaffected.
+- Rejected alternatives: a refined `Finite.t` payload (type-proves the
+  invariant but taxes every deconstruction and breaks the public payload type
+  for marginal safety over `private`); a distinct `` `Nan|`Inf `` constructor
+  (most faithful, but a larger type change handled by every formatter); and
+  validating in `Entry.create` (leaky — public record + parse path bypass it).
+
+---
+
 ## Tier 2
 
 Operator ergonomics and ecosystem. Complete after Tier 1 is stable.
