@@ -35,7 +35,15 @@
   (alcotest
    (and
     :with-test
-    (>= 1.7)))))
+    (>= 1.7)))
+  (qcheck-core
+   (and
+    :with-test
+    (>= 0.21)))
+  (qcheck-alcotest
+   (and
+    :with-test
+    (>= 0.21)))))
 
 (package
  (name olog_ppx)
@@ -60,4 +68,12 @@
   (yojson
    (and
     :with-test
-    (>= 2.1)))))
+    (>= 2.1)))
+  (qcheck-core
+   (and
+    :with-test
+    (>= 0.21)))
+  (qcheck-alcotest
+   (and
+    :with-test
+    (>= 0.21)))))

@@ -17,6 +17,8 @@ depends: [
   "ptime" {>= "1.1"}
   "yojson" {>= "2.1"}
   "alcotest" {with-test & >= "1.7"}
+  "qcheck-core" {with-test & >= "0.21"}
+  "qcheck-alcotest" {with-test & >= "0.21"}
   "odoc" {with-doc}
 ]
 build: [
