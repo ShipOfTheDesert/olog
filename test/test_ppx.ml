@@ -64,7 +64,7 @@ let test_literal_int_wrapped () =
   let entry = List.hd (List.rev !entries) in
   Alcotest.(check bool)
     "has int field" true
-    (List.mem ("x", Value.Int 42) entry.Entry.fields)
+    (List.mem ("x", Value.int 42) entry.Entry.fields)
 
 let test_literal_string_wrapped () =
   with_test_logger Level.Info @@ fun logger entries ->
@@ -73,7 +73,7 @@ let test_literal_string_wrapped () =
   let entry = List.hd (List.rev !entries) in
   Alcotest.(check bool)
     "has string field" true
-    (List.mem ("s", Value.String "hello") entry.Entry.fields)
+    (List.mem ("s", Value.string "hello") entry.Entry.fields)
 
 let test_literal_bool_wrapped () =
   with_test_logger Level.Info @@ fun logger entries ->
@@ -82,7 +82,7 @@ let test_literal_bool_wrapped () =
   let entry = List.hd (List.rev !entries) in
   Alcotest.(check bool)
     "has bool field" true
-    (List.mem ("ok", Value.Bool false) entry.Entry.fields)
+    (List.mem ("ok", Value.bool false) entry.Entry.fields)
 
 let test_backtick_int_wrapped () =
   with_test_logger Level.Info @@ fun logger entries ->
@@ -92,7 +92,7 @@ let test_backtick_int_wrapped () =
   let entry = List.hd (List.rev !entries) in
   Alcotest.(check bool)
     "has int field" true
-    (List.mem ("n", Value.Int 7) entry.Entry.fields)
+    (List.mem ("n", Value.int 7) entry.Entry.fields)
 
 let test_no_fields_form_empty_fields () =
   with_test_logger Level.Info @@ fun logger entries ->
@@ -114,7 +114,7 @@ let test_literal_float_wrapped () =
   let entry = List.hd (List.rev !entries) in
   Alcotest.(check bool)
     "has float field" true
-    (List.mem ("pi", Value.Float 3.14) entry.Entry.fields)
+    (List.mem ("pi", Value.float 3.14) entry.Entry.fields)
 
 let test_backtick_float_wrapped () =
   with_test_logger Level.Info @@ fun logger entries ->
@@ -124,7 +124,7 @@ let test_backtick_float_wrapped () =
   let entry = List.hd (List.rev !entries) in
   Alcotest.(check bool)
     "has float field" true
-    (List.mem ("x", Value.Float 2.72) entry.Entry.fields)
+    (List.mem ("x", Value.float 2.72) entry.Entry.fields)
 
 let test_backtick_string_wrapped () =
   with_test_logger Level.Info @@ fun logger entries ->
@@ -134,7 +134,7 @@ let test_backtick_string_wrapped () =
   let entry = List.hd (List.rev !entries) in
   Alcotest.(check bool)
     "has string field" true
-    (List.mem ("s", Value.String "abc") entry.Entry.fields)
+    (List.mem ("s", Value.string "abc") entry.Entry.fields)
 
 let test_backtick_bool_wrapped () =
   with_test_logger Level.Info @@ fun logger entries ->
@@ -144,7 +144,7 @@ let test_backtick_bool_wrapped () =
   let entry = List.hd (List.rev !entries) in
   Alcotest.(check bool)
     "has bool field" true
-    (List.mem ("ok", Value.Bool true) entry.Entry.fields)
+    (List.mem ("ok", Value.bool true) entry.Entry.fields)
 
 let test_backtick_null_wrapped () =
   with_test_logger Level.Info @@ fun logger entries ->
@@ -153,7 +153,7 @@ let test_backtick_null_wrapped () =
   let entry = List.hd (List.rev !entries) in
   Alcotest.(check bool)
     "has null field" true
-    (List.mem ("k", Value.Null) entry.Entry.fields)
+    (List.mem ("k", Value.null) entry.Entry.fields)
 
 (* ── PPX _exn tests ──────────────────────────────────────────────────────── *)
 
@@ -165,7 +165,7 @@ let test_ppx_exn_3_arg_emits_exn_fields () =
   let entry = List.hd (List.rev !entries) in
   Alcotest.(check bool)
     "has exn.name" true
-    (List.mem ("exn.name", Value.String "Failure") entry.Entry.fields);
+    (List.mem ("exn.name", Value.string "Failure") entry.Entry.fields);
   Alcotest.(check bool)
     "has exn.message" true
     (List.exists (fun (k, _) -> k = "exn.message") entry.Entry.fields);
@@ -181,10 +181,10 @@ let test_ppx_exn_4_arg_merges_user_fields () =
   let entry = List.hd (List.rev !entries) in
   Alcotest.(check bool)
     "has user field" true
-    (List.mem ("k", Value.Int 1) entry.Entry.fields);
+    (List.mem ("k", Value.int 1) entry.Entry.fields);
   Alcotest.(check bool)
     "has exn.name" true
-    (List.mem ("exn.name", Value.String "Failure") entry.Entry.fields)
+    (List.mem ("exn.name", Value.string "Failure") entry.Entry.fields)
 
 let test_ppx_exn_warn_extension_exists () =
   with_test_logger Level.Trace @@ fun logger entries ->

@@ -16,33 +16,33 @@ let test_current_no_binding () =
 (* F3 *)
 let test_current_inside_with_context () =
   Eio_main.run @@ fun _ ->
-  let fields = [ ("req_id", Olog.Value.String "abc") ] in
+  let fields = [ ("req_id", Olog.Value.string "abc") ] in
   Olog.Context.with_context ~fields (fun () ->
       let ctx = Olog.Context.current () in
       Alcotest.(check bool) "context non-empty" true (ctx <> []);
       Alcotest.(check bool)
         "req_id = abc" true
-        (List.assoc_opt "req_id" ctx = Some (Olog.Value.String "abc")))
+        (List.assoc_opt "req_id" ctx = Some (Olog.Value.string "abc")))
 
 (* F4 *)
 let test_fields_visible () =
   Eio_main.run @@ fun _ ->
   let fields =
-    [ ("user_id", Olog.Value.Int 42); ("region", Olog.Value.String "eu") ]
+    [ ("user_id", Olog.Value.int 42); ("region", Olog.Value.string "eu") ]
   in
   Olog.Context.with_context ~fields (fun () ->
       let ctx = Olog.Context.current () in
       Alcotest.(check bool)
         "user_id present" true
-        (List.assoc_opt "user_id" ctx = Some (Olog.Value.Int 42));
+        (List.assoc_opt "user_id" ctx = Some (Olog.Value.int 42));
       Alcotest.(check bool)
         "region present" true
-        (List.assoc_opt "region" ctx = Some (Olog.Value.String "eu")))
+        (List.assoc_opt "region" ctx = Some (Olog.Value.string "eu")))
 
 (* F4: context restored after normal return *)
 let test_context_restored_return () =
   Eio_main.run @@ fun _ ->
-  let fields = [ ("k", Olog.Value.String "v") ] in
+  let fields = [ ("k", Olog.Value.string "v") ] in
   Olog.Context.with_context ~fields (fun () -> ());
   let ctx = Olog.Context.current () in
   Alcotest.(check bool) "context empty after return" true (ctx = [])
@@ -50,7 +50,7 @@ let test_context_restored_return () =
 (* F4: context restored after exception *)
 let test_context_restored_raise () =
   Eio_main.run @@ fun _ ->
-  let fields = [ ("k", Olog.Value.String "v") ] in
+  let fields = [ ("k", Olog.Value.string "v") ] in
   (try Olog.Context.with_context ~fields (fun () -> raise Exit)
    with Exit -> ());
   let ctx = Olog.Context.current () in
@@ -66,20 +66,20 @@ let test_empty_fields_noop () =
 (* F5: inner value wins on duplicate key *)
 let test_inner_wins_duplicate () =
   Eio_main.run @@ fun _ ->
-  let outer = [ ("a", Olog.Value.Int 1) ] in
-  let inner = [ ("a", Olog.Value.Int 2) ] in
+  let outer = [ ("a", Olog.Value.int 1) ] in
+  let inner = [ ("a", Olog.Value.int 2) ] in
   Olog.Context.with_context ~fields:outer (fun () ->
       Olog.Context.with_context ~fields:inner (fun () ->
           let ctx = Olog.Context.current () in
           Alcotest.(check bool)
             "inner a=2 wins" true
-            (List.assoc_opt "a" ctx = Some (Olog.Value.Int 2))))
+            (List.assoc_opt "a" ctx = Some (Olog.Value.int 2))))
 
 (* F9: distinct fields accumulate across nesting levels *)
 let test_nested_accumulate () =
   Eio_main.run @@ fun _ ->
-  let outer = [ ("x", Olog.Value.Int 1) ] in
-  let inner = [ ("y", Olog.Value.Int 2) ] in
+  let outer = [ ("x", Olog.Value.int 1) ] in
+  let inner = [ ("y", Olog.Value.int 2) ] in
   Olog.Context.with_context ~fields:outer (fun () ->
       Olog.Context.with_context ~fields:inner (fun () ->
           let ctx = Olog.Context.current () in
@@ -89,21 +89,21 @@ let test_nested_accumulate () =
 (* F9: three-level nesting — deepest value wins for duplicate key *)
 let test_nested_deepest_wins () =
   Eio_main.run @@ fun _ ->
-  let l1 = [ ("k", Olog.Value.Int 1) ] in
-  let l2 = [ ("k", Olog.Value.Int 2) ] in
-  let l3 = [ ("k", Olog.Value.Int 3) ] in
+  let l1 = [ ("k", Olog.Value.int 1) ] in
+  let l2 = [ ("k", Olog.Value.int 2) ] in
+  let l3 = [ ("k", Olog.Value.int 3) ] in
   Olog.Context.with_context ~fields:l1 (fun () ->
       Olog.Context.with_context ~fields:l2 (fun () ->
           Olog.Context.with_context ~fields:l3 (fun () ->
               let ctx = Olog.Context.current () in
               Alcotest.(check bool)
                 "deepest k=3 wins" true
-                (List.assoc_opt "k" ctx = Some (Olog.Value.Int 3)))))
+                (List.assoc_opt "k" ctx = Some (Olog.Value.int 3)))))
 
 (* F7: forked fiber starts with empty context; parent context is unchanged *)
 let test_fiber_isolation () =
   Eio_main.run @@ fun _ ->
-  let fields = [ ("trace_id", Olog.Value.String "xyz") ] in
+  let fields = [ ("trace_id", Olog.Value.string "xyz") ] in
   Olog.Context.with_context ~fields (fun () ->
       let child_ctx = ref [] in
       Eio.Switch.run (fun sw ->
@@ -112,7 +112,7 @@ let test_fiber_isolation () =
       let parent_ctx = Olog.Context.current () in
       Alcotest.(check bool)
         "parent trace_id intact" true
-        (List.assoc_opt "trace_id" parent_ctx = Some (Olog.Value.String "xyz")))
+        (List.assoc_opt "trace_id" parent_ctx = Some (Olog.Value.string "xyz")))
 
 let () =
   Alcotest.run "Context"

@@ -46,7 +46,7 @@ let logfmt_value = function
   | Value.String s -> logfmt_quote s
   | Value.Int n -> string_of_int n
   (* Share the lossless float rendering; the result never needs quoting. *)
-  | Value.Float f -> Value.to_string (Value.Float f)
+  | Value.Float _ as v -> Value.to_string v
   | Value.Bool b -> string_of_bool b
   | Value.Null -> "null"
 

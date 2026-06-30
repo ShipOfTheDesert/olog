@@ -19,35 +19,37 @@ let olog_lid ~loc parts =
   { txt; loc }
 
 (* Wrap a single value expression according to the auto-wrap rules:
-   - int literal        → Olog.Value.Int expr
-   - float literal      → Olog.Value.Float expr
-   - string literal     → Olog.Value.String expr
-   - true / false       → Olog.Value.Bool expr
-   - `Int e             → Olog.Value.Int e
-   - `Float e           → Olog.Value.Float e
-   - `String e          → Olog.Value.String e
-   - `Bool e            → Olog.Value.Bool e
-   - `Null              → Olog.Value.Null
+   - int literal        → Olog.Value.int expr
+   - float literal      → Olog.Value.float expr
+   - string literal     → Olog.Value.string expr
+   - true / false       → Olog.Value.bool expr
+   - `Int e             → Olog.Value.int e
+   - `Float e           → Olog.Value.float e
+   - `String e          → Olog.Value.string e
+   - `Bool e            → Olog.Value.bool e
+   - `Null              → Olog.Value.null
    - anything else      → unchanged (must already be Value.t)
 
-   Note: Value variants are data constructors, built with pexp_construct. *)
+   Note: values are built via the Value smart constructors (function
+   applications), so non-finite floats are coerced at construction. *)
 let wrap_value ~loc expr =
-  (* Olog.Value.Name or Olog.Value.Name(arg) — always a constructor expression *)
-  let mk_ctor name arg_opt =
-    B.pexp_construct ~loc (olog_lid ~loc [ "Value"; name ]) arg_opt
+  (* Olog.Value.name applied to its argument *)
+  let apply name arg =
+    B.eapply ~loc (B.pexp_ident ~loc (olog_lid ~loc [ "Value"; name ])) [ arg ]
   in
   match expr.pexp_desc with
-  | Pexp_constant (Pconst_integer _) -> mk_ctor "Int" (Some expr)
-  | Pexp_constant (Pconst_float _) -> mk_ctor "Float" (Some expr)
-  | Pexp_constant (Pconst_string _) -> mk_ctor "String" (Some expr)
+  | Pexp_constant (Pconst_integer _) -> apply "int" expr
+  | Pexp_constant (Pconst_float _) -> apply "float" expr
+  | Pexp_constant (Pconst_string _) -> apply "string" expr
   | Pexp_construct ({ txt = Lident "true"; _ }, None)
   | Pexp_construct ({ txt = Lident "false"; _ }, None) ->
-      mk_ctor "Bool" (Some expr)
-  | Pexp_variant ("Int", Some arg) -> mk_ctor "Int" (Some arg)
-  | Pexp_variant ("Float", Some arg) -> mk_ctor "Float" (Some arg)
-  | Pexp_variant ("String", Some arg) -> mk_ctor "String" (Some arg)
-  | Pexp_variant ("Bool", Some arg) -> mk_ctor "Bool" (Some arg)
-  | Pexp_variant ("Null", None) -> mk_ctor "Null" None
+      apply "bool" expr
+  | Pexp_variant ("Int", Some arg) -> apply "int" arg
+  | Pexp_variant ("Float", Some arg) -> apply "float" arg
+  | Pexp_variant ("String", Some arg) -> apply "string" arg
+  | Pexp_variant ("Bool", Some arg) -> apply "bool" arg
+  | Pexp_variant ("Null", None) ->
+      B.pexp_ident ~loc (olog_lid ~loc [ "Value"; "null" ])
   | _ -> expr
 
 (* Wrap the value slot of a ("key", value) tuple expression *)

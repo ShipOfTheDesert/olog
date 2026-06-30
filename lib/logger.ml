@@ -81,7 +81,7 @@ let is_enabled t level = Level.compare level t.config.min_level >= 0
    to append (empty when the reading was valid). *)
 let resolve_timestamp = function
   | Some ts -> (ts, [])
-  | None -> (Ptime.epoch, [ ("olog.invalid_timestamp", Value.Bool true) ])
+  | None -> (Ptime.epoch, [ ("olog.invalid_timestamp", Value.bool true) ])
 
 (* Best-effort fallback line for a sink failure, written to the raw process
    stderr (ADR 0006 semantics, relocated from Output.protect to the worker).
@@ -305,9 +305,9 @@ let log_exn t ~level exn bt ?fields ?src_pos message =
   if is_enabled t level then begin
     let exn_fields =
       [
-        ("exn.name", Value.String (Printexc.exn_slot_name exn));
-        ("exn.message", Value.String (Printexc.to_string exn));
-        ("exn.backtrace", Value.String (Printexc.raw_backtrace_to_string bt));
+        ("exn.name", Value.string (Printexc.exn_slot_name exn));
+        ("exn.message", Value.string (Printexc.to_string exn));
+        ("exn.backtrace", Value.string (Printexc.raw_backtrace_to_string bt));
       ]
     in
     let ctx = Context.current () in

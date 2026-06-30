@@ -37,7 +37,7 @@ let () =
      Logger.log_exn logger ~level:Level.Error exn bt
        "database connection failed"
        ~fields:
-         [ ("host", Value.String "db.prod.internal"); ("attempt", Value.Int 1) ]);
+         [ ("host", Value.string "db.prod.internal"); ("attempt", Value.int 1) ]);
 
   (* PPX variant — backtrace capture is automatic *)
   (try connect_to_database "db.replica.internal"

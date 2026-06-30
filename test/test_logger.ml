@@ -560,14 +560,14 @@ let test_log_context_fields_appear () =
   Eio.Switch.run (fun sw ->
       let logger = make_logger ~sw ~clock:env#clock config "test" in
       Olog.Context.with_context
-        ~fields:[ ("request_id", Olog.Value.String "req-abc123") ]
+        ~fields:[ ("request_id", Olog.Value.string "req-abc123") ]
       @@ fun () ->
       Olog.Logger.log logger ~level:Olog.Level.Info "test";
       Olog.Logger.flush logger);
   let entry = Option.get !captured in
   Alcotest.(check opt_value)
     "context field request_id appears in entry"
-    (Some (Olog.Value.String "req-abc123"))
+    (Some (Olog.Value.string "req-abc123"))
     (field_value entry.Olog.Entry.fields "request_id")
 
 (* F8 — no context fields appear outside with_context scope *)
@@ -579,13 +579,13 @@ let test_log_no_context_outside_scope () =
   Eio.Switch.run (fun sw ->
       let logger = make_logger ~sw ~clock:env#clock config "test" in
       Olog.Logger.log logger ~level:Olog.Level.Info
-        ~fields:[ ("key", Olog.Value.String "val") ]
+        ~fields:[ ("key", Olog.Value.string "val") ]
         "test";
       Olog.Logger.flush logger);
   let entry = Option.get !captured in
   Alcotest.(check (list (pair string value_testable)))
     "fields contain only user-supplied key"
-    [ ("key", Olog.Value.String "val") ]
+    [ ("key", Olog.Value.string "val") ]
     entry.Olog.Entry.fields
 
 (* F9 — call-site fields override context on key collision *)
@@ -599,22 +599,24 @@ let test_log_callsite_overrides_context () =
       Olog.Context.with_context
         ~fields:
           [
-            ("k", Olog.Value.String "ctx");
-            ("ctx_only", Olog.Value.String "from-ctx");
+            ("k", Olog.Value.string "ctx");
+            ("ctx_only", Olog.Value.string "from-ctx");
           ]
       @@ fun () ->
       Olog.Logger.log logger ~level:Olog.Level.Info
-        ~fields:[ ("k", Olog.Value.String "explicit") ]
+        ~fields:[ ("k", Olog.Value.string "explicit") ]
         "test";
       Olog.Logger.flush logger);
   let entry = Option.get !captured in
   let fields = entry.Olog.Entry.fields in
   Alcotest.(check opt_value)
-    "non-colliding context field appears" (Some (Olog.Value.String "from-ctx"))
+    "non-colliding context field appears"
+    (Some (Olog.Value.string "from-ctx"))
     (field_value fields "ctx_only");
   Alcotest.(check opt_value)
     "call-site field overrides context on collision"
-    (Some (Olog.Value.String "explicit")) (field_value fields "k")
+    (Some (Olog.Value.string "explicit"))
+    (field_value fields "k")
 
 (* F10 — log_exn: context, user, and exception fields all present *)
 let test_log_exn_context_user_exn_all_present () =
@@ -625,26 +627,29 @@ let test_log_exn_context_user_exn_all_present () =
   Eio.Switch.run (fun sw ->
       let logger = make_logger ~sw ~clock:env#clock config "test" in
       Olog.Context.with_context
-        ~fields:[ ("request_id", Olog.Value.String "req-abc123") ]
+        ~fields:[ ("request_id", Olog.Value.string "req-abc123") ]
       @@ fun () ->
       let exn, bt =
         try raise (Failure "boom")
         with exn -> (exn, Printexc.get_raw_backtrace ())
       in
       Olog.Logger.log_exn logger ~level:Olog.Level.Error exn bt
-        ~fields:[ ("extra", Olog.Value.String "val") ]
+        ~fields:[ ("extra", Olog.Value.string "val") ]
         "error occurred";
       Olog.Logger.flush logger);
   let entry = Option.get !captured in
   let fields = entry.Olog.Entry.fields in
   Alcotest.(check opt_value)
-    "context field request_id present" (Some (Olog.Value.String "req-abc123"))
+    "context field request_id present"
+    (Some (Olog.Value.string "req-abc123"))
     (field_value fields "request_id");
   Alcotest.(check opt_value)
-    "user field extra present" (Some (Olog.Value.String "val"))
+    "user field extra present"
+    (Some (Olog.Value.string "val"))
     (field_value fields "extra");
   Alcotest.(check opt_value)
-    "exn.name present" (Some (Olog.Value.String "Failure"))
+    "exn.name present"
+    (Some (Olog.Value.string "Failure"))
     (field_value fields "exn.name");
   Alcotest.(check bool)
     "exn.message present" true
@@ -664,8 +669,8 @@ let test_log_exn_exn_overrides_context_and_user () =
       Olog.Context.with_context
         ~fields:
           [
-            ("exn.name", Olog.Value.String "from-context");
-            ("ctx_field", Olog.Value.String "ctx-val");
+            ("exn.name", Olog.Value.string "from-context");
+            ("ctx_field", Olog.Value.string "ctx-val");
           ]
       @@ fun () ->
       let exn, bt =
@@ -673,17 +678,18 @@ let test_log_exn_exn_overrides_context_and_user () =
         with exn -> (exn, Printexc.get_raw_backtrace ())
       in
       Olog.Logger.log_exn logger ~level:Olog.Level.Error exn bt
-        ~fields:[ ("exn.name", Olog.Value.String "from-user") ]
+        ~fields:[ ("exn.name", Olog.Value.string "from-user") ]
         "error occurred";
       Olog.Logger.flush logger);
   let entry = Option.get !captured in
   let fields = entry.Olog.Entry.fields in
   Alcotest.(check opt_value)
-    "non-colliding context field present" (Some (Olog.Value.String "ctx-val"))
+    "non-colliding context field present"
+    (Some (Olog.Value.string "ctx-val"))
     (field_value fields "ctx_field");
   Alcotest.(check opt_value)
     "exn.name is real exception name, not context or user value"
-    (Some (Olog.Value.String "Failure"))
+    (Some (Olog.Value.string "Failure"))
     (field_value fields "exn.name")
 
 (* F11 — nested context: inner scope fields appear, inner wins on collision *)
@@ -697,15 +703,15 @@ let test_log_nested_context_inner_wins () =
       Olog.Context.with_context
         ~fields:
           [
-            ("outer", Olog.Value.String "a");
-            ("shared", Olog.Value.String "outer");
+            ("outer", Olog.Value.string "a");
+            ("shared", Olog.Value.string "outer");
           ]
       @@ fun () ->
       Olog.Context.with_context
         ~fields:
           [
-            ("inner", Olog.Value.String "b");
-            ("shared", Olog.Value.String "inner");
+            ("inner", Olog.Value.string "b");
+            ("shared", Olog.Value.string "inner");
           ]
       @@ fun () ->
       Olog.Logger.log logger ~level:Olog.Level.Info "test";
@@ -713,13 +719,16 @@ let test_log_nested_context_inner_wins () =
   let entry = Option.get !captured in
   let fields = entry.Olog.Entry.fields in
   Alcotest.(check opt_value)
-    "outer context field present" (Some (Olog.Value.String "a"))
+    "outer context field present"
+    (Some (Olog.Value.string "a"))
     (field_value fields "outer");
   Alcotest.(check opt_value)
-    "inner context field present" (Some (Olog.Value.String "b"))
+    "inner context field present"
+    (Some (Olog.Value.string "b"))
     (field_value fields "inner");
   Alcotest.(check opt_value)
-    "inner value wins on shared key" (Some (Olog.Value.String "inner"))
+    "inner value wins on shared key"
+    (Some (Olog.Value.string "inner"))
     (field_value fields "shared")
 
 (* ── Group 11: shutdown ─────────────────────────────────────────────────── *)
@@ -1127,7 +1136,7 @@ let test_log_marks_invalid_timestamp_by_default () =
     (Ptime.equal entry.Olog.Entry.timestamp Ptime.epoch);
   Alcotest.(check opt_value)
     "reserved invalid-timestamp marker is appended"
-    (Some (Olog.Value.Bool true))
+    (Some (Olog.Value.bool true))
     (field_value entry.Olog.Entry.fields "olog.invalid_timestamp")
 
 (* ── runner ──────────────────────────────────────────────────────────────── *)

@@ -19,9 +19,9 @@ let () =
   in
   Logger.log logger ~level:Level.Info "server starting";
   Logger.log logger ~level:Level.Warn "low disk space"
-    ~fields:[ ("free_mb", Value.Int 42) ];
+    ~fields:[ ("free_mb", Value.int 42) ];
   Logger.log logger ~level:Level.Error "connection failed"
-    ~fields:[ ("host", Value.String "db.local") ];
+    ~fields:[ ("host", Value.string "db.local") ];
   Logger.flush logger;
   let d = Logger.diagnostics logger in
   Printf.printf

@@ -19,7 +19,7 @@ let () =
     | Ok logger -> logger
     | Error msg -> failwith msg
   in
-  Context.with_context ~fields:[ ("request_id", Value.String "req-abc123") ]
+  Context.with_context ~fields:[ ("request_id", Value.string "req-abc123") ]
   @@ fun () ->
   [%log.info logger "server started" [ ("port", 8080) ]];
   [%log.info

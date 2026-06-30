@@ -13,6 +13,12 @@ let float_to_string f =
     let s16 = Printf.sprintf "%.16g" f in
     if round_trips s16 then s16 else Printf.sprintf "%.17g" f
 
+let string s = String s
+let int n = Int n
+let float f = if Float.is_finite f then Float f else String (float_to_string f)
+let bool b = Bool b
+let null = Null
+
 let to_string = function
   | String s -> s
   | Int n -> string_of_int n
@@ -30,7 +36,7 @@ let to_yojson = function
 let of_yojson = function
   | `String s -> Ok (String s)
   | `Int n -> Ok (Int n)
-  | `Float f -> Ok (Float f)
+  | `Float f -> Ok (float f)
   | `Bool b -> Ok (Bool b)
   | `Null -> Ok Null
   | `List _ -> Error "unsupported JSON type: array"

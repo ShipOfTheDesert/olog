@@ -23,7 +23,7 @@ let test_create_minimal () =
 
 let test_create_with_all_fields () =
   let src : Olog.Entry.src_pos = { file = "test.ml"; line = 42; col = 5 } in
-  let fields = [ ("key", Olog.Value.String "val") ] in
+  let fields = [ ("key", Olog.Value.string "val") ] in
   let entry =
     Olog.Entry.create ~level:Olog.Level.Error ~message:"boom" ~fields
       ~src_pos:src ~timestamp:test_timestamp ()
@@ -35,7 +35,7 @@ let test_create_with_all_fields () =
 let test_create_fields_upsert () =
   let fields =
     [
-      ("a", Olog.Value.Int 1); ("b", Olog.Value.Int 2); ("a", Olog.Value.Int 3);
+      ("a", Olog.Value.int 1); ("b", Olog.Value.int 2); ("a", Olog.Value.int 3);
     ]
   in
   let entry =
@@ -116,7 +116,7 @@ let test_to_yojson_timestamp_iso8601 () =
 
 let test_to_yojson_fields () =
   let fields =
-    [ ("count", Olog.Value.Int 5); ("name", Olog.Value.String "test") ]
+    [ ("count", Olog.Value.int 5); ("name", Olog.Value.string "test") ]
   in
   let entry =
     Olog.Entry.create ~level:Olog.Level.Debug ~message:"f" ~fields

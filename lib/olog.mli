@@ -25,7 +25,7 @@
         match logger with
         | Error msg -> failwith msg
         | Ok logger ->
-            Context.with_context ~fields:[ ("request_id", Value.String "abc") ]
+            Context.with_context ~fields:[ ("request_id", Value.string "abc") ]
             @@ fun () -> Logger.log logger ~level:Level.Info "server started"
     ]}
 
