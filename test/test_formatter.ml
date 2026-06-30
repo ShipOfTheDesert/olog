@@ -18,12 +18,12 @@ let test_value_to_string () =
   let check label expected v =
     Alcotest.(check string) label expected (Value.to_string v)
   in
-  check "String" "hello" (Value.String "hello");
-  check "Int" "42" (Value.Int 42);
-  check "Float" "2.5" (Value.Float 2.5);
-  check "Bool true" "true" (Value.Bool true);
-  check "Bool false" "false" (Value.Bool false);
-  check "Null" "null" Value.Null
+  check "String" "hello" (Value.string "hello");
+  check "Int" "42" (Value.int 42);
+  check "Float" "2.5" (Value.float 2.5);
+  check "Bool true" "true" (Value.bool true);
+  check "Bool false" "false" (Value.bool false);
+  check "Null" "null" Value.null
 
 (* Extract the rendered value of a space-separated [key=value] field from a
    single formatted line (logfmt or text). Float renderings never contain a
@@ -117,7 +117,7 @@ let test_json_fixed_keys () =
   | _ -> Alcotest.fail "expected JSON object"
 
 let test_json_fields_are_nested () =
-  let fields = [ ("count", Value.Int 5); ("tag", Value.String "web") ] in
+  let fields = [ ("count", Value.int 5); ("tag", Value.string "web") ] in
   let entry = make_entry ~fields "req" in
   let result = Formatter.json entry in
   let json = parse_jsonl "json_fields" result in
@@ -132,7 +132,7 @@ let test_json_fields_are_nested () =
 let test_json_no_fields_key () =
   (* Fields are nested under "fields", not spliced as top-level keys
      (Decision 1, finding 4). *)
-  let entry = make_entry ~fields:[ ("k", Value.Int 1) ] "msg" in
+  let entry = make_entry ~fields:[ ("k", Value.int 1) ] "msg" in
   let result = Formatter.json entry in
   let json = parse_jsonl "json_no_fields_key" result in
   let pairs = fields_obj "json_no_fields_key" json in
@@ -146,9 +146,9 @@ let test_json_no_duplicate_keys () =
      (FR1, finding 4). *)
   let fields =
     [
-      ("level", Value.String "custom");
-      ("message", Value.String "m2");
-      ("timestamp", Value.String "t2");
+      ("level", Value.string "custom");
+      ("message", Value.string "m2");
+      ("timestamp", Value.string "t2");
     ]
   in
   let entry = make_entry ~fields "real" in
@@ -170,7 +170,7 @@ let test_json_no_duplicate_keys () =
 let test_json_matches_entry_to_yojson () =
   (* One serializer per type: Formatter.json is exactly the JSON Lines rendering
      of Entry.to_yojson (FR1). *)
-  let fields = [ ("count", Value.Int 5); ("level", Value.String "x") ] in
+  let fields = [ ("count", Value.int 5); ("level", Value.string "x") ] in
   let src_pos = Some Entry.{ file = "a.ml"; line = 1; col = 2 } in
   let entry = make_entry ~fields ?src_pos "msg" in
   let expected = Yojson.Safe.to_string (Entry.to_yojson entry) ^ "\n" in
@@ -212,11 +212,11 @@ let test_json_src_pos_absent () =
 let test_json_all_value_types () =
   let fields =
     [
-      ("s", Value.String "hi");
-      ("n", Value.Int 7);
-      ("f", Value.Float 2.5);
-      ("b", Value.Bool false);
-      ("z", Value.Null);
+      ("s", Value.string "hi");
+      ("n", Value.int 7);
+      ("f", Value.float 2.5);
+      ("b", Value.bool false);
+      ("z", Value.null);
     ]
   in
   let entry = make_entry ~fields "vals" in
@@ -239,20 +239,54 @@ let test_json_all_value_types () =
   | Some `Null -> ()
   | _ -> Alcotest.fail "z wrong"
 
-(* Pin the known limitation (S1 / ROADMAP follow-up): a non-finite float field
-   has no standard-JSON representation, so [Formatter.json] raises
-   [Yojson.Json_error]. logfmt/text render the IEEE specials as "nan"/"inf"/
-   "-inf" instead (see the float round-trip tests). The tracked 0017 follow-up
-   makes non-finite floats unrepresentable in [Value.t], which removes this
-   raise; this test then changes to assert a valid record. *)
-let test_json_non_finite_float_raises () =
+(* A non-finite float field built through the public [Value.float] smart
+   constructor renders as a JSON string and [Formatter.json] never raises:
+   every formatter is total (FR2). Replaces [test_json_non_finite_float_raises],
+   which pinned the now-removed 0016 raising behaviour. *)
+let test_json_total_non_finite () =
   List.iter
-    (fun f ->
-      let entry = make_entry ~fields:[ ("v", Value.Float f) ] "m" in
-      match Formatter.json entry with
-      | _ -> Alcotest.failf "expected json to raise on non-finite float %h" f
-      | exception Yojson.Json_error _ -> ())
-    [ Float.nan; Float.infinity; Float.neg_infinity ]
+    (fun (f, expected) ->
+      let entry = make_entry ~fields:[ ("v", Value.float f) ] "m" in
+      let result =
+        match Formatter.json entry with
+        | line -> line
+        | exception Yojson.Json_error msg ->
+            Alcotest.failf "json raised on non-finite float %h: %s" f msg
+      in
+      let pairs =
+        fields_obj "json_total_non_finite"
+          (parse_jsonl "json_total_non_finite" result)
+      in
+      match List.assoc_opt "v" pairs with
+      | Some (`String s) ->
+          Alcotest.(check string) "non-finite renders as JSON string" expected s
+      | _ ->
+          Alcotest.failf "expected JSON string field for non-finite float %h" f)
+    [
+      (Float.nan, "nan"); (Float.infinity, "inf"); (Float.neg_infinity, "-inf");
+    ]
+
+(* The JSON parse path manufactures a non-finite [Float] from an overflowing
+   literal ([1e999] parses to [`Float infinity]); [of_yojson] must coerce it
+   through [Value.float] so a parsed [Value] never carries a non-finite [Float]
+   (FR4). [Value.t] is [private], so pattern position stays open even though
+   construction is gated. *)
+let test_of_yojson_coerces_overflow () =
+  let cases = [ ("1e999", "inf"); ("-1e999", "-inf") ] in
+  List.iter
+    (fun (literal, expected) ->
+      let j = Yojson.Safe.from_string literal in
+      match Value.of_yojson j with
+      | Error m -> Alcotest.failf "of_yojson failed on %s: %s" literal m
+      | Ok (Value.Float _) ->
+          Alcotest.failf "of_yojson kept a non-finite Float for %s" literal
+      | Ok (Value.String s) ->
+          Alcotest.(check string)
+            "overflow coerced to its string form" expected s
+      | Ok ((Value.Int _ | Value.Bool _ | Value.Null) as v) ->
+          Alcotest.failf "expected String %S, got %s" expected
+            (Value.to_string v))
+    cases
 
 (* ── Formatter.logfmt ───────────────────────────────────────────────────── *)
 
@@ -268,7 +302,7 @@ let test_logfmt_minimal () =
   Alcotest.(check string) "logfmt minimal" expected result
 
 let test_logfmt_with_int_field () =
-  let fields = [ ("n", Value.Int 7) ] in
+  let fields = [ ("n", Value.int 7) ] in
   let entry = make_entry ~fields "req" in
   let result = Formatter.logfmt entry in
   let expected = Printf.sprintf "ts=%s level=info msg=req n=7\n" epoch_str in
@@ -285,7 +319,7 @@ let test_logfmt_message_with_space () =
 
 let test_logfmt_field_value_with_equals () =
   (* String value containing '=' must be double-quoted. *)
-  let fields = [ ("kv", Value.String "a=b") ] in
+  let fields = [ ("kv", Value.string "a=b") ] in
   let entry = make_entry ~fields "msg" in
   let result = Formatter.logfmt entry in
   let expected =
@@ -295,7 +329,7 @@ let test_logfmt_field_value_with_equals () =
 
 let test_logfmt_field_value_with_interior_quote () =
   (* String value containing '"' must be double-quoted with '"' escaped. *)
-  let fields = [ ("q", Value.String "say \"hi\"") ] in
+  let fields = [ ("q", Value.string "say \"hi\"") ] in
   let entry = make_entry ~fields "msg" in
   let result = Formatter.logfmt entry in
   let expected =
@@ -305,7 +339,7 @@ let test_logfmt_field_value_with_interior_quote () =
 
 let test_logfmt_fixed_key_order () =
   (* ts, level, msg must appear before structured fields. *)
-  let fields = [ ("z", Value.Bool true) ] in
+  let fields = [ ("z", Value.bool true) ] in
   let entry = make_entry ~fields "ev" in
   let result = Formatter.logfmt entry in
   let prefix = Printf.sprintf "ts=%s level=info msg=ev" epoch_str in
@@ -314,7 +348,7 @@ let test_logfmt_fixed_key_order () =
 
 let test_logfmt_bool_field () =
   (* Bool values must be rendered unquoted as "true" or "false". *)
-  let fields = [ ("flag", Value.Bool true) ] in
+  let fields = [ ("flag", Value.bool true) ] in
   let entry = make_entry ~fields "ev" in
   let result = Formatter.logfmt entry in
   let expected =
@@ -324,14 +358,14 @@ let test_logfmt_bool_field () =
 
 let test_logfmt_null_field () =
   (* Null must render as the unquoted string "null". *)
-  let fields = [ ("x", Value.Null) ] in
+  let fields = [ ("x", Value.null) ] in
   let entry = make_entry ~fields "ev" in
   let result = Formatter.logfmt entry in
   let expected = Printf.sprintf "ts=%s level=info msg=ev x=null\n" epoch_str in
   Alcotest.(check string) "logfmt null field" expected result
 
 let test_logfmt_with_float_field () =
-  let fields = [ ("ratio", Value.Float 2.5) ] in
+  let fields = [ ("ratio", Value.float 2.5) ] in
   let entry = make_entry ~fields "stat" in
   let result = Formatter.logfmt entry in
   let expected =
@@ -342,7 +376,7 @@ let test_logfmt_with_float_field () =
 let test_float_roundtrip_logfmt () =
   List.iter
     (fun f ->
-      let entry = make_entry ~fields:[ ("v", Value.Float f) ] "m" in
+      let entry = make_entry ~fields:[ ("v", Value.float f) ] "m" in
       let rendered = extract_field (Formatter.logfmt entry) "v" in
       let parsed = float_of_string rendered in
       (* Float.equal is NaN-safe (nan = nan) and distinguishes -0.0 from 0.0. *)
@@ -355,7 +389,7 @@ let test_logfmt_single_line_newline_field () =
   (* A field value containing a newline must not forge a second line: it is
      quoted and the newline backslash-escaped, so the record stays one line
      (FR2, finding 5). *)
-  let fields = [ ("v", Value.String "line1\nline2") ] in
+  let fields = [ ("v", Value.string "line1\nline2") ] in
   let entry = make_entry ~fields "msg" in
   let result = Formatter.logfmt entry in
   Alcotest.(check int) "single line" 1 (newline_count result);
@@ -367,7 +401,7 @@ let test_logfmt_backslash_quote_unambiguous () =
   (* A value containing both backslash and quote must parse back unambiguously:
      the backslash is escaped so the parser cannot read it as escaping the
      following quote (FR2, finding 5). *)
-  let fields = [ ("v", Value.String {|a\b"c|}) ] in
+  let fields = [ ("v", Value.string {|a\b"c|}) ] in
   let entry = make_entry ~fields "msg" in
   let result = Formatter.logfmt entry in
   Alcotest.(check int) "single line" 1 (newline_count result);
@@ -394,21 +428,21 @@ let test_text_level_uppercase () =
   Alcotest.(check string) "text level upper" expected result
 
 let test_text_with_fields () =
-  let fields = [ ("n", Value.Int 3); ("ok", Value.Bool true) ] in
+  let fields = [ ("n", Value.int 3); ("ok", Value.bool true) ] in
   let entry = make_entry ~fields "done" in
   let result = Formatter.text entry in
   let expected = Printf.sprintf "%s INFO done n=3 ok=true\n" epoch_str in
   Alcotest.(check string) "text with fields" expected result
 
 let test_text_null_field () =
-  let fields = [ ("x", Value.Null) ] in
+  let fields = [ ("x", Value.null) ] in
   let entry = make_entry ~fields "ev" in
   let result = Formatter.text entry in
   let expected = Printf.sprintf "%s INFO ev x=null\n" epoch_str in
   Alcotest.(check string) "text null field" expected result
 
 let test_text_float_field () =
-  let fields = [ ("ratio", Value.Float 2.5) ] in
+  let fields = [ ("ratio", Value.float 2.5) ] in
   let entry = make_entry ~fields "stat" in
   let result = Formatter.text entry in
   let expected = Printf.sprintf "%s INFO stat ratio=2.5\n" epoch_str in
@@ -417,7 +451,7 @@ let test_text_float_field () =
 let test_float_roundtrip_text () =
   List.iter
     (fun f ->
-      let entry = make_entry ~fields:[ ("v", Value.Float f) ] "m" in
+      let entry = make_entry ~fields:[ ("v", Value.float f) ] "m" in
       let rendered = extract_field (Formatter.text entry) "v" in
       let parsed = float_of_string rendered in
       if not (Float.equal parsed f) then
@@ -492,10 +526,11 @@ let gen_text_char =
 let gen_str =
   QCheck.Gen.string_size ~gen:gen_text_char (QCheck.Gen.int_range 0 12)
 
-(* Finite floats only for the JSON generator: [Yojson.Safe.to_string] raises on
-   NaN/∞ ("not allowed in standard JSON"), so they cannot appear in a JSON
-   round-trip. They are exercised by the logfmt/text generators, whose string
-   rendering ([Value.to_string]) handles the specials losslessly. *)
+(* Edge-case floats for the value generators; [special_floats] (below) adds the
+   non-finite IEEE values. The split is for readability only: post-0017
+   [Value.float] coerces a non-finite input to its string form at construction,
+   so a special never reaches [json] as a non-finite [Float] and every generator
+   may include them ([specials:true]). *)
 let finite_edge_floats =
   [
     0.0;
@@ -519,11 +554,11 @@ let gen_value ~specials =
   in
   oneof_weighted
     [
-      (4, map (fun s -> Value.String s) gen_str);
-      (3, map (fun n -> Value.Int n) (int_range (-1_000_000_000) 1_000_000_000));
-      (3, map (fun f -> Value.Float f) (oneof_list float_pool));
-      (2, map (fun b -> Value.Bool b) bool);
-      (1, return Value.Null);
+      (4, map (fun s -> Value.string s) gen_str);
+      (3, map (fun n -> Value.int n) (int_range (-1_000_000_000) 1_000_000_000));
+      (3, map (fun f -> Value.float f) (oneof_list float_pool));
+      (2, map (fun b -> Value.bool b) bool);
+      (1, return Value.null);
     ]
 
 let gen_src_pos =
@@ -812,8 +847,8 @@ let prop_text_contract e =
   && List.for_all
        (fun (_k, v) ->
          match v with
-         | Value.Float f ->
-             let r = Value.to_string (Value.Float f) in
+         | Value.Float f as v ->
+             let r = Value.to_string v in
              contains_sub ~sub:r out && Float.equal (float_of_string r) f
          (* non-float fields carry no float to check; enumerated rather than
             [| _ ->] to stay exhaustive (exhaustive-variant-matching). *)
@@ -846,8 +881,13 @@ let () =
           Alcotest.test_case "src_pos present" `Quick test_json_src_pos_present;
           Alcotest.test_case "src_pos absent" `Quick test_json_src_pos_absent;
           Alcotest.test_case "all value types" `Quick test_json_all_value_types;
-          Alcotest.test_case "non-finite float raises" `Quick
-            test_json_non_finite_float_raises;
+          Alcotest.test_case "non-finite float total" `Quick
+            test_json_total_non_finite;
+        ] );
+      ( "Value.of_yojson",
+        [
+          Alcotest.test_case "overflow coerced to string" `Quick
+            test_of_yojson_coerces_overflow;
         ] );
       ( "Formatter.logfmt",
         [
@@ -888,10 +928,11 @@ let () =
         ] );
       ( "Property round-trip",
         [
-          (* json excludes NaN/∞ (Yojson rejects them); logfmt/text include
-             them via [specials:true]. *)
-          qcheck_case "json round-trip"
-            (arb_entry ~specials:false)
+          (* All three generators include the IEEE specials ([specials:true]):
+             [Value.float] coerces a non-finite input to its string form at
+             construction, so it never reaches [json] as a non-finite [Float]
+             and the round-trip stays total (FR1, FR2, NFR3). *)
+          qcheck_case "json round-trip" (arb_entry ~specials:true)
             prop_json_roundtrip;
           qcheck_case "logfmt round-trip" (arb_entry ~specials:true)
             prop_logfmt_roundtrip;

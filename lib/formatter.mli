@@ -21,13 +21,10 @@ val json : t
     ["message"], or ["timestamp"]. If [entry.src_pos] is [Some p], a ["src_pos"]
     object with ["file"], ["line"], and ["col"] is appended.
 
-    {b Known limitation:} a non-finite float field value (NaN, [infinity],
-    [neg_infinity]) has no standard-JSON representation, so this raises
-    [Yojson.Json_error]. At a sink that error is caught and the entry is dropped
-    from that sink (with a stderr diagnostic), while [logfmt] and [text] still
-    render it as ["nan"]/["inf"]/["-inf"]. Making non-finite floats
-    unrepresentable in {!Value.t} is a tracked follow-up (see ROADMAP) that will
-    remove this asymmetry. *)
+    [json] is total: it never raises. A non-finite float field value (NaN,
+    [infinity], [neg_infinity]) cannot reach here as a [Float] — {!Value.float}
+    coerces it to a [String] (["nan"]/["inf"]/["-inf"]) at construction — so a
+    [Float] is always finite and has a standard-JSON representation. *)
 
 val logfmt : t
 (** [logfmt entry] serialises [entry] in logfmt format as exactly one line

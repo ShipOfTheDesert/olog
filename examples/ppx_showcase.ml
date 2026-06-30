@@ -28,7 +28,7 @@ let () =
     | Ok logger -> logger
     | Error msg -> failwith msg
   in
-  (* Basic: string and int literals are auto-wrapped to Value.String / Value.Int *)
+  (* Basic: string and int literals are auto-wrapped via Value.string / Value.int *)
   [%log.info logger "server started" [ ("port", 8080); ("host", "0.0.0.0") ]];
 
   (* No fields — just a message *)

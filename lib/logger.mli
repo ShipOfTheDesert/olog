@@ -51,7 +51,7 @@ type timestamp_fallback =
           returning [Error]. *)
   | Mark_invalid
       (** On an unrepresentable timestamp, stamp [Ptime.epoch] and append the
-          reserved field [("olog.invalid_timestamp", Value.Bool true)]. *)
+          reserved field [("olog.invalid_timestamp", Value.bool true)]. *)
 
 module Config : sig
   type t = private {
@@ -141,7 +141,7 @@ val log :
     The [olog.] field-name prefix is reserved for the logger itself (as the
     [exn.] prefix is reserved for {!log_exn}); user-supplied fields with this
     prefix may be overwritten. The logger emits
-    [("olog.invalid_timestamp", Value.Bool true)] when the clock yields an
+    [("olog.invalid_timestamp", Value.bool true)] when the clock yields an
     unrepresentable timestamp under the {!Mark_invalid} policy.
 
     If [level] is below the logger's minimum level, returns immediately without
@@ -169,9 +169,9 @@ val log_exn :
 (** [log_exn t ~level exn bt ?fields ?src_pos msg] logs [msg] at [level] with
     structured exception fields extracted from [exn] and [bt]:
 
-    - [("exn.name", Value.String (Printexc.exn_slot_name exn))]
-    - [("exn.message", Value.String (Printexc.to_string exn))]
-    - [("exn.backtrace", Value.String (Printexc.raw_backtrace_to_string bt))]
+    - [("exn.name", Value.string (Printexc.exn_slot_name exn))]
+    - [("exn.message", Value.string (Printexc.to_string exn))]
+    - [("exn.backtrace", Value.string (Printexc.raw_backtrace_to_string bt))]
 
     The entry's fields are the merge of fiber-local context, user-supplied
     [~fields], and exception fields, in that precedence order (exception fields

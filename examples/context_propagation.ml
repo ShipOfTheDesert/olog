@@ -26,16 +26,16 @@ let () =
     | Error msg -> failwith msg
   in
   (* Top-level context: request_id is attached to every log in this scope *)
-  Context.with_context ~fields:[ ("request_id", Value.String "req-001") ]
+  Context.with_context ~fields:[ ("request_id", Value.string "req-001") ]
   @@ fun () ->
   [%log.info logger "handling request" [ ("endpoint", "/users") ]];
 
   (* Nested context: user_id is added; request_id is still present *)
-  Context.with_context ~fields:[ ("user_id", Value.Int 42) ] @@ fun () ->
+  Context.with_context ~fields:[ ("user_id", Value.int 42) ] @@ fun () ->
   [%log.info logger "authorized user" []];
 
   (* Override: a deeper context field replaces the outer one on key collision *)
-  Context.with_context ~fields:[ ("request_id", Value.String "req-002-retry") ]
+  Context.with_context ~fields:[ ("request_id", Value.string "req-002-retry") ]
   @@ fun () ->
   [%log.warn logger "retrying with new correlation id" []];
 
@@ -45,7 +45,7 @@ let () =
       [%log.info logger "background task started" [ ("task", "cleanup") ]];
 
       (* Establish context explicitly for the forked fiber *)
-      Context.with_context ~fields:[ ("task_id", Value.String "bg-007") ]
+      Context.with_context ~fields:[ ("task_id", Value.string "bg-007") ]
       @@ fun () -> [%log.info logger "background task running" []]);
 
   (* Back in the original fiber — request_id is still present *)

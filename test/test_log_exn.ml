@@ -46,7 +46,7 @@ let test_log_exn_captures_exn_name () =
   let entry = List.hd (List.rev !entries) in
   Alcotest.(check bool)
     "has exn.name field" true
-    (List.mem ("exn.name", Value.String "Failure") entry.Entry.fields)
+    (List.mem ("exn.name", Value.string "Failure") entry.Entry.fields)
 
 (* ── F2: exn.message field ──────────────────────────────────────────────── *)
 
@@ -60,7 +60,7 @@ let test_log_exn_captures_exn_message () =
   let expected_msg = Printexc.to_string exn in
   Alcotest.(check bool)
     "has exn.message field" true
-    (List.mem ("exn.message", Value.String expected_msg) entry.Entry.fields)
+    (List.mem ("exn.message", Value.string expected_msg) entry.Entry.fields)
 
 (* ── F3: exn.backtrace when recording enabled ───────────────────────────── *)
 
@@ -98,7 +98,7 @@ let test_log_exn_backtrace_when_recording_disabled () =
   let entry = List.hd (List.rev !entries) in
   Alcotest.(check bool)
     "backtrace is empty string" true
-    (List.mem ("exn.backtrace", Value.String "") entry.Entry.fields)
+    (List.mem ("exn.backtrace", Value.string "") entry.Entry.fields)
 
 (* ── F4: user fields merged with exn fields ──────────────────────────────── *)
 
@@ -107,15 +107,15 @@ let test_log_exn_merges_user_fields () =
   let exn = Failure "test" in
   let bt = Printexc.get_callstack 0 in
   Logger.log_exn logger ~level:Level.Error exn bt
-    ~fields:[ ("request_id", Value.String "abc") ]
+    ~fields:[ ("request_id", Value.string "abc") ]
     "error occurred";
   Logger.flush logger;
   let entry = List.hd (List.rev !entries) in
   let has_user =
-    List.mem ("request_id", Value.String "abc") entry.Entry.fields
+    List.mem ("request_id", Value.string "abc") entry.Entry.fields
   in
   let has_exn =
-    List.mem ("exn.name", Value.String "Failure") entry.Entry.fields
+    List.mem ("exn.name", Value.string "Failure") entry.Entry.fields
   in
   Alcotest.(check bool) "has user field" true has_user;
   Alcotest.(check bool) "has exn field" true has_exn
@@ -127,17 +127,17 @@ let test_log_exn_exn_fields_override_collision () =
   let exn = Failure "test" in
   let bt = Printexc.get_callstack 0 in
   Logger.log_exn logger ~level:Level.Error exn bt
-    ~fields:[ ("exn.name", Value.String "custom") ]
+    ~fields:[ ("exn.name", Value.string "custom") ]
     "error occurred";
   Logger.flush logger;
   let entry = List.hd (List.rev !entries) in
   (* exn.name should be "Failure", not "custom" — exn fields take precedence *)
   Alcotest.(check bool)
     "exn.name is auto-extracted, not user override" true
-    (List.mem ("exn.name", Value.String "Failure") entry.Entry.fields);
+    (List.mem ("exn.name", Value.string "Failure") entry.Entry.fields);
   Alcotest.(check bool)
     "user override is not present" false
-    (List.mem ("exn.name", Value.String "custom") entry.Entry.fields)
+    (List.mem ("exn.name", Value.string "custom") entry.Entry.fields)
 
 (* ── F5: never raises on full queue ──────────────────────────────────────── *)
 
