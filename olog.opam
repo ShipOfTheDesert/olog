@@ -4,11 +4,11 @@ synopsis:
   "Production-grade structured async logging for Eio-based OCaml applications"
 description:
   "olog provides structured JSON logging, fiber-local context propagation, async non-blocking emission, and configurable output destinations for OCaml 5 applications built on the Eio concurrency library."
-maintainer: ["Your Name <you@example.com>"]
-authors: ["Your Name"]
+maintainer: ["Miguel Lopez <miguellova@gmail.com>"]
+authors: ["Miguel Lopez"]
 license: "ISC"
-homepage: "https://github.com/yourhandle/olog"
-bug-reports: "https://github.com/yourhandle/olog/issues"
+homepage: "https://github.com/ShipOfTheDesert/olog"
+bug-reports: "https://github.com/ShipOfTheDesert/olog/issues"
 depends: [
   "dune" {>= "3.16"}
   "ocaml" {>= "5.2.0"}
@@ -35,4 +35,4 @@ build: [
     "@doc" {with-doc}
   ]
 ]
-dev-repo: "git+https://github.com/yourhandle/olog.git"
+dev-repo: "git+https://github.com/ShipOfTheDesert/olog.git"

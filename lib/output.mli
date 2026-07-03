@@ -45,6 +45,7 @@ val to_sink : t -> Logger.sink
 (** [to_sink output] adapts [output] for use with [Logger.Config.sinks].
 
     Mapping:
-    - [emit entry] → [output.write [entry]]
+    - [emit entries] → [output.write entries] (the batch passes through
+      unchanged)
     - [flush ()] → no-op
     - [close ()] → [output.close ()] *)

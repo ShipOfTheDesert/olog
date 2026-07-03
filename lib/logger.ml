@@ -1,6 +1,6 @@
 type sink = {
   name : string;
-  emit : Entry.t -> (unit, string) result;
+  emit : Entry.t list -> (unit, string) result;
   flush : unit -> (unit, string) result;
   close : unit -> (unit, string) result;
 }
@@ -28,7 +28,11 @@ type diagnostics = {
   name : string;
   queue_depth : int;
   queue_capacity : int;
+  emit_count : int;
   drop_count : int;
+  drops_queue_full : int;
+  drops_after_shutdown : int;
+  drops_on_cancel : int;
   is_shutdown : bool;
 }
 
@@ -56,7 +60,15 @@ type t = {
          on [Eio.Mutex] guarding its state with a [Stdlib.Mutex] and [Eio.Stream]
          being documented thread-safe (verified, Eio 1.3) — so the
          [Domain_manager] conservation tests are race-free, not accidental. *)
-  drop_count : int Atomic.t;
+  emit_count : int Atomic.t;
+      (* The accounting counters. There is no stored drop total: [diagnostics]
+         derives it as the sum of the three cause counters, so
+         [drop_count = Σ causes] holds in every snapshot by construction —
+         a stored total incremented separately could be observed out of sync
+         with its causes between the two increments. *)
+  drops_queue_full : int Atomic.t;
+  drops_after_shutdown : int Atomic.t;
+  drops_on_cancel : int Atomic.t;
   state : state Atomic.t;
   stopped : unit Eio.Promise.t;
       (* resolved by the worker's [finally] on every exit path — the single,
@@ -110,9 +122,16 @@ let worker_loop t =
         t.config.sinks
     end
   in
-  let emit_to_sinks entry =
+  let emit_to_sinks entries =
+    (* Count the batch as emitted *before* dispatching. Once entries are off
+       the queue they must be accounted somewhere; if a sink re-raises
+       [Cancelled] mid-dispatch (aborting the worker), counting afterwards
+       would leave them neither emitted nor dropped and break conservation.
+       This also implements ADR 0007's batch granularity: a failed batch
+       still counts as emitted. Counted once per entry, not per sink. *)
+    ignore (Atomic.fetch_and_add t.emit_count (List.length entries) : int);
     List.iter
-      (fun (sink : sink) -> run_sink_op sink.name (fun () -> sink.emit entry))
+      (fun (sink : sink) -> run_sink_op sink.name (fun () -> sink.emit entries))
       t.config.sinks
   in
   let flush_sinks () =
@@ -126,9 +145,11 @@ let worker_loop t =
       | None -> ()
       (* The producer mutex prevents a Log from following Shutdown in the queue,
          so this arm is defensive — but a straggler is counted as a drop rather
-         than silently discarded, preserving conservation (RFC 0013 F5). *)
+         than silently discarded, preserving conservation (RFC 0013 F5). It is
+         attributed to [drops_after_shutdown]: the worker is already processing
+         [Shutdown] when it finds the straggler. *)
       | Some (Log _) ->
-          Atomic.incr t.drop_count;
+          Atomic.incr t.drops_after_shutdown;
           aux ()
       | Some (Flush resolver) ->
           Eio.Promise.resolve resolver ();
@@ -137,12 +158,27 @@ let worker_loop t =
     in
     aux ()
   in
-  let rec loop () =
-    let msg = Eio.Stream.take t.queue in
-    match msg with
-    | Log entry ->
-        emit_to_sinks entry;
-        loop ()
+  let rec loop () = handle (Eio.Stream.take t.queue)
+  and handle = function
+    | Log entry -> (
+        (* Greedy batch drain (FR2, Feature 0018): after the blocking take of a
+           [Log], collect further consecutive [Log]s without blocking and emit
+           them as one batch per sink. The collection stops at the first
+           control message so no entry is written past a [Flush]/[Shutdown]
+           barrier enqueued before it — the FIFO ordering ADR 0004 guarantees
+           by construction is preserved through the batching. The control
+           message that ended the collection is already off the queue, so it is
+           handed straight to [handle] after the batch is emitted. *)
+        let rec collect acc =
+          match Eio.Stream.take_nonblocking t.queue with
+          | Some (Log e) -> collect (e :: acc)
+          | Some ((Flush _ | Shutdown) as control) ->
+              (List.rev acc, Some control)
+          | None -> (List.rev acc, None)
+        in
+        let batch, control = collect [ entry ] in
+        emit_to_sinks batch;
+        match control with Some msg -> handle msg | None -> loop ())
     | Flush resolver ->
         flush_sinks ();
         Eio.Promise.resolve resolver ();
@@ -166,7 +202,7 @@ let worker_loop t =
       match Eio.Stream.take_nonblocking t.queue with
       | None -> ()
       | Some (Log entry) ->
-          emit_to_sinks entry;
+          emit_to_sinks [ entry ];
           aux ()
       | Some (Flush resolver) ->
           Eio.Promise.resolve resolver ();
@@ -176,12 +212,16 @@ let worker_loop t =
     aux ();
     flush_sinks ()
   in
-  (* Publish [Stopped] and account for anything still queued as a drop. On the
-     normal ([drain_trailing]) and cancellation ([drain_on_cancel]) exit paths
-     the queue is already empty, so this does nothing; it only does work if the
-     worker unwinds via an *unexpected* exception with entries still queued,
-     keeping conservation unconditional (RFC 0013 F5). It counts rather than
-     emits because emitting mid-fault could re-enter the failure. Wrapped in
+  (* Publish [Stopped] and account for anything still queued as a drop,
+     attributed to [drops_on_cancel]: everything counted here was accepted but
+     lost because the worker is terminating without a graceful drain. On the
+     normal ([drain_trailing]) and completed-cancellation ([drain_on_cancel])
+     exit paths the queue is already empty, so this does nothing; it only does
+     work if the worker unwinds via an *unexpected* exception — including a
+     sink re-raising [Cancelled] mid-drain, which aborts [drain_on_cancel] —
+     with entries still queued, keeping conservation unconditional (RFC 0013
+     F5). It counts rather than emits because emitting mid-fault could
+     re-enter the failure. Wrapped in
      [Cancel.protect] so a cancelled daemon can still take the mutex; if an
      earlier fault poisoned the mutex, fall back to a lock-free stop — this
      drain must never raise. *)
@@ -195,7 +235,7 @@ let worker_loop t =
       match Eio.Stream.take_nonblocking t.queue with
       | None -> ()
       | Some (Log _) ->
-          Atomic.incr t.drop_count;
+          Atomic.incr t.drops_on_cancel;
           aux ()
       | Some (Flush resolver) ->
           Eio.Promise.resolve resolver ();
@@ -243,7 +283,10 @@ let create ~sw ~clock (config : Config.t) name =
   | Ok () ->
       let queue = Eio.Stream.create config.queue_depth in
       let mutex = Eio.Mutex.create () in
-      let drop_count = Atomic.make 0 in
+      let emit_count = Atomic.make 0 in
+      let drops_queue_full = Atomic.make 0 in
+      let drops_after_shutdown = Atomic.make 0 in
+      let drops_on_cancel = Atomic.make 0 in
       let state = Atomic.make Running in
       let stopped, stopped_r = Eio.Promise.create () in
       let t =
@@ -252,7 +295,10 @@ let create ~sw ~clock (config : Config.t) name =
           config;
           queue;
           mutex;
-          drop_count;
+          emit_count;
+          drops_queue_full;
+          drops_after_shutdown;
+          drops_on_cancel;
           state;
           stopped;
           stopped_r;
@@ -274,7 +320,8 @@ let enqueue_or_drop t entry =
       match Atomic.get t.state with
       | Running when Eio.Stream.length t.queue < t.config.queue_depth ->
           Eio.Stream.add t.queue (Log entry)
-      | Running | Stopping | Stopped -> Atomic.incr t.drop_count)
+      | Running -> Atomic.incr t.drops_queue_full
+      | Stopping | Stopped -> Atomic.incr t.drops_after_shutdown)
 
 let log t ~level ?fields ?src_pos message =
   if is_enabled t level then begin
@@ -368,10 +415,17 @@ let shutdown t =
   Eio.Promise.await t.stopped
 
 let diagnostics t =
+  let drops_queue_full = Atomic.get t.drops_queue_full in
+  let drops_after_shutdown = Atomic.get t.drops_after_shutdown in
+  let drops_on_cancel = Atomic.get t.drops_on_cancel in
   {
     name = t.name;
     queue_depth = Eio.Stream.length t.queue;
     queue_capacity = t.config.queue_depth;
-    drop_count = Atomic.get t.drop_count;
+    emit_count = Atomic.get t.emit_count;
+    drop_count = drops_queue_full + drops_after_shutdown + drops_on_cancel;
+    drops_queue_full;
+    drops_after_shutdown;
+    drops_on_cancel;
     is_shutdown = is_shutting_down (Atomic.get t.state);
   }

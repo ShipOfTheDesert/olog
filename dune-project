@@ -5,13 +5,13 @@
 (generate_opam_files true)
 
 (source
- (github yourhandle/olog))
+ (github ShipOfTheDesert/olog))
 
 (license ISC)
 
-(authors "Your Name")
+(authors "Miguel Lopez")
 
-(maintainers "Your Name <you@example.com>")
+(maintainers "Miguel Lopez <miguellova@gmail.com>")
 
 (package
  (name olog)
@@ -65,6 +65,16 @@
    (and
     :with-test
     (>= 1.7)))
+  (ocamlformat
+    (and
+      (= 0.28.1)
+      :with-dev-setup))
+  (odoc
+    (and
+      (>= 3.1.0)
+      :with-dev-setup))
+  (opam-dune-lint :with-dev-setup)
+  (ocaml-lsp-server :with-dev-setup)
   (yojson
    (and
     :with-test

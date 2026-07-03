@@ -5,17 +5,21 @@ description: """
 Provides [%%log.LEVEL] extension points that expand to guarded Logger.log
    calls with compile-time source location and automatic Value wrapping for
    literal field values."""
-maintainer: ["Your Name <you@example.com>"]
-authors: ["Your Name"]
+maintainer: ["Miguel Lopez <miguellova@gmail.com>"]
+authors: ["Miguel Lopez"]
 license: "ISC"
-homepage: "https://github.com/yourhandle/olog"
-bug-reports: "https://github.com/yourhandle/olog/issues"
+homepage: "https://github.com/ShipOfTheDesert/olog"
+bug-reports: "https://github.com/ShipOfTheDesert/olog/issues"
 depends: [
   "dune" {>= "3.16"}
   "ppxlib" {>= "0.32"}
   "olog" {= version}
   "eio_main" {with-test & >= "1.0"}
   "alcotest" {with-test & >= "1.7"}
+  "ocamlformat" {= "0.28.1" & with-dev-setup}
+  "odoc" {>= "3.1.0" & with-dev-setup}
+  "opam-dune-lint" {with-dev-setup}
+  "ocaml-lsp-server" {with-dev-setup}
   "yojson" {with-test & >= "2.1"}
   "qcheck-core" {with-test & >= "0.21"}
   "qcheck-alcotest" {with-test & >= "0.21"}
@@ -35,4 +39,4 @@ build: [
     "@doc" {with-doc}
   ]
 ]
-dev-repo: "git+https://github.com/yourhandle/olog.git"
+dev-repo: "git+https://github.com/ShipOfTheDesert/olog.git"

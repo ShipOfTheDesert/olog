@@ -31,7 +31,7 @@ Every pull request must pass all five checks before merge:
 dune build          # compiles without errors
 dune test           # all tests pass
 dune build @fmt     # ocamlformat compliance
-dune build @doc     # odoc generation succeeds
+dune build @doc --force  # odoc generation succeeds (--force: incremental runs can miss or fabricate warnings)
 opam-dune-lint      # opam/dune dependency alignment
 ```
 
@@ -200,6 +200,25 @@ Reviewers will verify every PR against the following:
 - [ ] Tests were written before implementation where possible
 - [ ] All five quality gate checks pass
 - [ ] Scope matches the stated goal — no unrelated changes
+
+The following rules come from the failure-pattern lessons library
+(`docs/lessons/` in a development checkout — each entry records the bug that
+taught the rule):
+
+- [ ] Atomics are written only through `compare_and_set` transition helpers —
+      an `Atomic.get` followed by a dependent `Atomic.set` is a race until
+      proven otherwise (docs/lessons/001-cas-only-atomics-transitions.md)
+- [ ] No catch-all exception handlers: `with _ ->` is forbidden, handlers name
+      the exceptions they expect, and `Eio.Cancel.Cancelled` is always
+      re-raised (docs/lessons/002-no-catch-all-exception-handlers.md)
+- [ ] One serializer per type: any second rendering of a type derives from its
+      canonical serializer, never a parallel walk over its fields
+      (docs/lessons/003-one-serializer-per-type.md)
+- [ ] Every quantitative or behavioural claim in an `.mli` doc comment ships a
+      test asserting it, in the same PR
+      (docs/lessons/004-mli-claims-need-tests.md)
+- [ ] A new or changed formatter ships its round-trip property test in the
+      same PR (docs/lessons/005-formatters-ship-round-trip-tests.md)
 
 ---
 

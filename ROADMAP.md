@@ -52,8 +52,8 @@ Implemented: docs/rfcs/0011-graceful-shutdown-and-drain.md
 
 ### Logger Lifecycle and Accounting Correctness
 
-PRD: docs/prds/0012-logger-lifecycle-and-accounting-correctness.md
-RFC: docs/rfcs/0013-logger-lifecycle-and-accounting-correctness.md
+Implemented: docs/prds/0012-logger-lifecycle-and-accounting-correctness.md,
+docs/rfcs/0013-logger-lifecycle-and-accounting-correctness.md
 
 Fixes the liveness and accounting bugs documented in ANALYSIS.md: flush and
 shutdown deadlocks after switch cancellation, the concurrent-shutdown race,
@@ -64,8 +64,8 @@ entry loss, and the silent epoch timestamp fallback.
 
 ### Formatter Output Correctness
 
-Legacy PRD (to be replanned as a feature doc in docs/features/):
-docs/prds/0014-formatter-output-correctness.md
+Implemented: docs/features/0016-formatter-output-correctness.md (replanned
+from the legacy PRD docs/prds/0014-formatter-output-correctness.md)
 
 Fixes the output-correctness bugs documented in ANALYSIS.md: duplicate JSON
 keys, log-line forging via unescaped newlines in logfmt and text output, and
@@ -75,6 +75,10 @@ first tagged release. Sequenced after PRD 0012.
 ---
 
 ### logfmt Key Escaping and Reserved-Key Collision
+
+Implemented: docs/features/0018-analysis-open-items-closeout.md (Task 1 —
+keys join the value quote/escape grammar; exact fixed-key matches renamed
+with an `olog.` prefix per Implementation Decision 1).
 
 Follow-up surfaced during Feature 0016 (Formatter Output Correctness). That
 feature closed the line-forging and duplicate-key vectors for field *values*,
@@ -99,6 +103,8 @@ observable output, so it belongs before the first tagged release.
 ---
 
 ### Value: Non-Finite Floats Unrepresentable
+
+Implemented: docs/features/0017-value-non-finite-floats-unrepresentable.md
 
 Follow-up surfaced during Feature 0016 (Formatter Output Correctness). A
 non-finite float field value (NaN, ∞, −∞) has no standard-JSON representation,
@@ -140,10 +146,17 @@ Operator ergonomics and ecosystem. Complete after Tier 1 is stable.
 
 ### README, CHANGES, and opam Release
 
-`dune-project` uses placeholder values (`yourhandle/olog`, `Your Name`). There
-is no README, no CHANGES.md, and no tagged release. The library cannot be
-installed via `opam install olog` by anyone outside the repository. This work
-unlocks external contributors and real-world testing.
+Partially implemented: docs/features/0018-analysis-open-items-closeout.md
+(Task 6 — packaging cleanup: `bin/` scaffold removed, real metadata in
+`dune-project`, CHANGES.md created; Task 7 — README rewritten against the
+actual API). The opam-repository submission and the `v0.1.0` tag remain —
+they are a release act, out of that feature's scope.
+
+Original problem statement: `dune-project` uses placeholder values
+(`yourhandle/olog`, `Your Name`). There is no README, no CHANGES.md, and no
+tagged release. The library cannot be installed via `opam install olog` by
+anyone outside the repository. This work unlocks external contributors and
+real-world testing.
 
 **Tradeoffs and things to consider:**
 - README should include: one-paragraph pitch, quick-start code block (matching
@@ -211,7 +224,14 @@ a single misconfigured log call degrades the entire logging pipeline.
 
 ### Metrics and Observability
 
-`Logger.diagnostics` exposes `drop_count` and `queue_depth` as a point-in-time
+Partially implemented: docs/features/0018-analysis-open-items-closeout.md
+(Tasks 2–4 — batch-shaped sink contract, greedy barrier-respecting worker
+batching, `emit_count`, and per-cause drop counters). The rest of this item
+(`register_metrics` callbacks, latency histograms, Prometheus/OTel
+integration) remains planned.
+
+Original problem statement: `Logger.diagnostics` exposes `drop_count` and
+`queue_depth` as a point-in-time
 snapshot with no hook for external metrics systems. A production deployment
 needs monotonic counters (entries emitted, entries dropped, bytes written) and
 latency histograms for `sink.emit` to integrate with Prometheus, statsd, or
@@ -268,9 +288,15 @@ affecting users who only need file or stdout output.
 
 ### Failure-Pattern Lessons Library
 
-ANALYSIS.md proposes a `docs/lessons/` library mirroring the ADR pattern but
-for failure patterns: after each bug class is fixed, record the symptom, the
-root cause, and the rule that prevents recurrence.
+Implemented: docs/features/0018-analysis-open-items-closeout.md (Task 8 —
+docs/lessons/ created with 000-template.md and the five seed entries from
+ANALYSIS.md, each stating its enforcement rung; the checklist-rung rules
+added to CONTRIBUTING.md's Review Checklist).
+
+Original problem statement: ANALYSIS.md proposes a `docs/lessons/` library
+mirroring the ADR pattern but for failure patterns: after each bug class is
+fixed, record the symptom, the root cause, and the rule that prevents
+recurrence.
 
 **Tradeoffs and things to consider:**
 - Every lesson must state its enforcement rung (type system > test > lint/CI
@@ -339,15 +365,20 @@ application logging configuration.
 
 ### Context Inheritance Decision
 
-Must be resolved before OpenTelemetry Trace Context Propagation. ADR 0002
-chose deliberate non-inheritance: forked fibers start with an empty context.
-OTel trace propagation almost always wants inheritance (a request's
-`trace_id` should follow `Fiber.both` branches), and the README currently
-advertises automatic propagation to child fibers — the opposite of the
-implementation. Retrofitting inheritance onto raw effects means switching to
-`Eio.Fiber.with_binding` or threading context explicitly — an API break, so
-this must be decided before the context API is considered stable (see
-ANALYSIS.md).
+Decided: docs/adrs/0019-context-inheritance.md (Feature 0018, Task 5) affirms
+ADR 0002's non-inheritance as the intended, stable contract; the README now
+states the explicit capture-before-fork idiom instead of claiming automatic
+propagation. Any future OTel propagation must be explicit or arrive as an
+opt-in API superseding ADR 0019.
+
+Original problem statement: ADR 0002 chose deliberate non-inheritance —
+forked fibers start with an empty context. OTel trace propagation almost
+always wants inheritance (a request's `trace_id` should follow `Fiber.both`
+branches), and the README at the time advertised automatic propagation to
+child fibers — the opposite of the implementation. Retrofitting inheritance
+onto raw effects means switching to `Eio.Fiber.with_binding` or threading
+context explicitly — an API break, so this had to be decided before the
+context API is considered stable (see ANALYSIS.md).
 
 ---
 

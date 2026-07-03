@@ -42,14 +42,18 @@ val logfmt : t
     values are rendered with {!Value.to_string} (floats losslessly) and never
     need quoting.
 
-    The unambiguous-parse guarantee covers field {e values} and the message, not
-    field {e keys}: keys are emitted raw, and [ts]/[level]/[msg] are always
-    present, so a field whose key contains a space, [=], a quote, or a
-    line-splitter — or equals a fixed key — can forge or duplicate a token. Keys
-    are assumed to be identifiers distinct from the fixed keys (true for all
-    PPX-generated fields). Escaping keys and resolving fixed-key collisions is a
-    tracked follow-up (see ROADMAP), the logfmt analogue of the JSON
-    duplicate-key fix. *)
+    Field {e keys} join the same quote/escape grammar as values, so the
+    unambiguous-parse guarantee covers the whole token stream: a key is
+    double-quoted and escaped under exactly the rules above, and the one-rule
+    reverse (unquoted is literal, quoted is unescaped) applies to the key and
+    value position alike. A key that is exactly [ts], [level], or [msg] is first
+    renamed with the machine-detectable [olog.] prefix ([ts] becomes [olog.ts]),
+    so a user field can never shadow or duplicate a fixed token. No other key is
+    renamed: a key already inside the [olog.] namespace passes through
+    untouched, which means a literal user key [olog.ts] and a renamed [ts] field
+    render identically — a benign duplicate user key, the same shape the field
+    list itself permits. PPX-generated keys are safe identifier literals and
+    render byte-identically to before. *)
 
 val text : t
 (** [text entry] serialises [entry] as a human-readable line followed by ['\n'].

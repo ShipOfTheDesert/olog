@@ -5,6 +5,7 @@
   context_propagation
   error_handling
   custom_output
+  batch_sink
   ppx_showcase)
  (libraries olog eio_main)
  (preprocess
@@ -17,4 +18,5 @@
   context_propagation.exe
   error_handling.exe
   custom_output.exe
+  batch_sink.exe
   ppx_showcase.exe))

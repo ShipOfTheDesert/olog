@@ -8,8 +8,8 @@ let make_capturing_sink () =
     {
       name = "capture";
       emit =
-        (fun e ->
-          entries := e :: !entries;
+        (fun batch ->
+          entries := List.rev_append batch !entries;
           Ok ());
       flush = (fun () -> Ok ());
       close = (fun () -> Ok ());

@@ -8,11 +8,14 @@
     suspended.
 
     Accounting is conservative: every entry accepted by {!log}/{!log_exn} — one
-    at or above the configured minimum level — is either {e emitted} (dispatched
-    to every sink) or counted in [diagnostics.drop_count], never silently lost.
-    This holds under concurrent load from many fibers and under switch
-    cancellation. An entry counts as emitted once it has been dispatched to the
-    sinks; a per-sink failure is reported to process stderr, not re-queued.
+    at or above the configured minimum level — is either {e emitted} (counted in
+    [diagnostics.emit_count]) or {e dropped} (counted in
+    [diagnostics.drop_count], attributed to exactly one of the per-cause
+    counters), never silently lost. This holds under concurrent load from many
+    fibers and under switch cancellation. An entry counts as emitted at the
+    moment the worker hands its batch to the sinks — the count is taken before
+    the sinks run, so a delivery aborted mid-dispatch still counts as emitted; a
+    per-sink failure is reported to process stderr, not re-queued.
 
     The worker's lifetime is tied to the [Eio.Switch.t] passed to {!create}; it
     terminates when {!shutdown} is called or when the switch closes. Call
@@ -23,13 +26,14 @@
 type sink = {
   name : string;
       (** Identifies the sink in the worker's fallback error reports. *)
-  emit : Entry.t -> (unit, string) result;
-      (** Called by the worker fiber for each log entry. May perform I/O.
-          Expected failures are reported as [Error msg]; the worker logs a
-          fallback line to process stderr and continues with the next entry. A
-          sink that raises instead (a contract violation) is also tolerated —
-          the worker reports it and survives — but [Eio.Cancel.Cancelled] is
-          always re-raised, never swallowed. *)
+  emit : Entry.t list -> (unit, string) result;
+      (** Called by the worker fiber with a non-empty batch of entries, in
+          enqueue order. May perform I/O. Expected failures are reported as
+          [Error msg] covering the whole batch; the worker logs one fallback
+          line to process stderr and continues with later entries — a failed
+          batch is not retried. A sink that raises instead (a contract
+          violation) is also tolerated — the worker reports it and survives —
+          but [Eio.Cancel.Cancelled] is always re-raised, never swallowed. *)
   flush : unit -> (unit, string) result;
       (** Flush any buffered output. Called after all preceding entries have
           been emitted when {!val:flush} is invoked on the logger. Same
@@ -88,13 +92,33 @@ type diagnostics = {
   queue_depth : int;
       (** Current number of entries in the queue at snapshot time. *)
   queue_capacity : int;  (** Configured maximum queue size. *)
+  emit_count : int;
+      (** Total number of entries handed to the sinks since the logger was
+          created, counted once per entry regardless of the number of sinks. A
+          batch whose delivery fails still counts as emitted — the failure is
+          reported to process stderr, not re-queued. *)
   drop_count : int;
-      (** Total number of entries dropped since the logger was created. *)
+      (** Total number of entries dropped since the logger was created. Equal to
+          [drops_queue_full + drops_after_shutdown + drops_on_cancel] in every
+          snapshot — the total is derived from the cause counters at snapshot
+          time. *)
+  drops_queue_full : int;
+      (** Entries dropped because the queue was full when they were submitted
+          (backpressure). *)
+  drops_after_shutdown : int;
+      (** Entries dropped because they were submitted after the logger had begun
+          terminating — via {!shutdown} or switch cancellation. *)
+  drops_on_cancel : int;
+      (** Entries accepted but lost because the worker terminated without a
+          graceful drain: switch cancellation whose best-effort drain was cut
+          short, or an unexpected worker failure. *)
   is_shutdown : bool;
       (** [true] after {!shutdown} has been called. When [true], {!log} and
           {!log_exn} are no-ops and {!val:flush} returns immediately. *)
 }
-(** A point-in-time snapshot of a logger's internal metrics. *)
+(** A point-in-time snapshot of a logger's internal metrics. Conservation is
+    externally checkable: entries accepted by {!log}/{!log_exn} equal
+    [emit_count + drop_count] once the logger has terminated. *)
 
 type t
 (** An asynchronous structured logger. Opaque — use {!create} to construct. *)
@@ -106,11 +130,11 @@ val create :
   string ->
   (t, string) result
 (** [create ~sw ~clock config name] creates a new logger named [name].
-    Initialises a bounded queue of [config.queue_depth] entries, an atomic drop
-    counter at zero, and forks a worker daemon fiber under [sw]. The worker
-    drains the queue, calling each sink in [config.sinks] for every entry. When
-    [sw] closes, the worker calls [sink.close ()] on each sink before
-    terminating.
+    Initialises a bounded queue of [config.queue_depth] entries, the emit and
+    per-cause drop counters at zero, and forks a worker daemon fiber under [sw].
+    The worker drains the queue, calling each sink in [config.sinks] for every
+    entry. When [sw] closes, the worker calls [sink.close ()] on each sink
+    before terminating.
 
     @param sw The enclosing switch. The worker is tied to this lifetime.
     @param clock Eio realtime clock used to timestamp each entry at call time.
@@ -146,8 +170,8 @@ val log :
 
     If [level] is below the logger's minimum level, returns immediately without
     calling [Context.current] or allocating an [Entry.t]. If the queue is full,
-    the entry is dropped and the drop counter is incremented — the calling fiber
-    is never suspended.
+    the entry is dropped and counted in [diagnostics.drops_queue_full] — the
+    calling fiber is never suspended.
 
     @param level Log severity.
     @param fields
@@ -182,7 +206,7 @@ val log_exn :
     Like {!log}, this function never raises. If [level] is below the logger's
     minimum level, returns immediately without calling [Context.current] or
     capturing any fields. If the internal queue is full the entry is dropped and
-    the drop counter is incremented.
+    counted in [diagnostics.drops_queue_full].
 
     {b Backtrace recording:} [bt] is typically obtained by calling
     [Printexc.get_raw_backtrace ()] immediately after catching the exception.
@@ -211,9 +235,10 @@ val shutdown : t -> unit
     sink.
 
     After [shutdown] returns, subsequent calls to {!log} and {!log_exn} are
-    no-ops — entries are dropped and the drop counter is incremented. Subsequent
-    calls to {!val:flush} return immediately without blocking.
-    {!val:diagnostics} reports [is_shutdown = true].
+    no-ops — entries are dropped and counted in
+    [diagnostics.drops_after_shutdown]. Subsequent calls to {!val:flush} return
+    immediately without blocking. {!val:diagnostics} reports
+    [is_shutdown = true].
 
     [shutdown] is idempotent and safe under concurrent invocation: any number of
     fibers, across any number of domains, may call it simultaneously, and every

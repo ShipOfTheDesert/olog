@@ -7,7 +7,7 @@ basic.ml — text formatter, direct Logger API:
   TIMESTAMP INFO server starting
   TIMESTAMP WARN low disk space free_mb=42
   TIMESTAMP ERROR connection failed host=db.local
-  diagnostics: name=basic queue_depth=0 drop_count=0 is_shutdown=false
+  diagnostics: name=basic queue_depth=0 emit_count=3 drop_count=0 is_shutdown=false
 
 structured.ml — JSON formatter, PPX, context fields:
 
@@ -41,6 +41,16 @@ custom_output.ml — Output.make with buffer sink, dual destinations:
   --- captured buffer (325 bytes) ---
   {"timestamp":"TIMESTAMP","level":"info","message":"event one","fields":{"key":"value"},"src_pos":{"file":"examples/custom_output.ml","line":40,"col":2}}
   {"timestamp":"TIMESTAMP","level":"warn","message":"event two","fields":{"count":42},"src_pos":{"file":"examples/custom_output.ml","line":41,"col":2}}
+
+batch_sink.ml — a fully custom Logger.sink, batch-shaped emit:
+
+  $ ./batch_sink.exe 2>&1 | sed -E 's/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z/TIMESTAMP/g'
+  --- batch of 3 entries ---
+  TIMESTAMP INFO request received path=/health
+  TIMESTAMP INFO request authorised user_id=42
+  TIMESTAMP WARN slow response duration_ms=523
+  --- flush ---
+  --- close ---
 
 ppx_showcase.ml — all levels, auto-wrapping, variants, exn:
 

@@ -37,7 +37,7 @@ let stderr ~env ~formatter () =
 let to_sink output =
   {
     Logger.name = output.name;
-    emit = (fun entry -> output.write [ entry ]);
+    emit = output.write;
     flush = (fun () -> Ok ());
     close = (fun () -> output.close ());
   }

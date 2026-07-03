@@ -120,7 +120,7 @@ let test_stderr_close_noop () =
 
 (* ── Group 4: Output.to_sink ────────────────────────────────────────────── *)
 
-(* F15: emit calls output.write with a singleton list *)
+(* F15: a singleton emit reaches output.write unchanged *)
 let test_to_sink_emit () =
   let written = ref [] in
   let output : Output.t =
@@ -135,10 +135,41 @@ let test_to_sink_emit () =
   in
   let sink = Output.to_sink output in
   let entry = make_entry "hello" in
-  ignore (sink.Logger.emit entry);
+  (match sink.Logger.emit [ entry ] with
+  | Ok () -> ()
+  | Error msg -> Alcotest.failf "emit failed: %s" msg);
   Alcotest.(check int) "write called with one entry" 1 (List.length !written);
   Alcotest.(check string)
     "correct entry message" "hello" (List.hd !written).Entry.message
+
+(* FR2 (Feature 0018) — to_sink passes the batch through to [write] unchanged:
+   one [write] call per [emit] call, same entries, same order — no per-entry
+   collapse. *)
+let test_to_sink_passes_batch_through () =
+  let batches = ref [] in
+  let output : Output.t =
+    {
+      Output.name = "test";
+      write =
+        (fun entries ->
+          batches := entries :: !batches;
+          Ok ());
+      close = (fun () -> Ok ());
+    }
+  in
+  let sink = Output.to_sink output in
+  let batch = [ make_entry "one"; make_entry "two"; make_entry "three" ] in
+  (match sink.Logger.emit batch with
+  | Ok () -> ()
+  | Error msg -> Alcotest.failf "emit failed: %s" msg);
+  match !batches with
+  | [ received ] ->
+      Alcotest.(check (list string))
+        "write receives the full batch in order" [ "one"; "two"; "three" ]
+        (List.map (fun (e : Entry.t) -> e.Entry.message) received)
+  | received ->
+      Alcotest.failf "expected exactly one write call, got %d"
+        (List.length received)
 
 (* F15: flush is a no-op *)
 let test_to_sink_flush_noop () =
@@ -200,6 +231,8 @@ let () =
       ( "Output.to_sink",
         [
           Alcotest.test_case "emit calls output.write" `Quick test_to_sink_emit;
+          Alcotest.test_case "emit passes the batch through to write" `Quick
+            test_to_sink_passes_batch_through;
           Alcotest.test_case "flush is no-op" `Quick test_to_sink_flush_noop;
           Alcotest.test_case "close calls output.close" `Quick
             test_to_sink_close;

@@ -59,4 +59,4 @@ module Formatter : module type of Formatter
 (** Pure log entry formatters ([json], [logfmt], [text]). *)
 
 module Output : module type of Output
-(** Output destinations: stdout, stderr, file, HTTP. *)
+(** Output destinations: stdout, stderr, or any [Eio.Flow.sink]. *)

@@ -486,30 +486,14 @@ let test_text_single_line_newline_message () =
 
 (* ── Generators ─────────────────────────────────────────────────────────────
 
-   Field *values* and messages carry the adversarial content the findings
-   concern (newlines, quotes, backslashes, control bytes, edge floats). Field
-   *names* (keys) are restricted to logfmt-safe identifiers that are not the
-   reserved fixed keys: logfmt does not escape keys and emits ts/level/msg
-   unconditionally, so a field key containing a space/'='/quote, or equal to a
-   fixed key, would forge an ambiguous or duplicate token. Both are out of this
-   feature's scope (which covers value/message line-forging and JSON key
-   nesting, findings 4–6), not regressions under test here.
+   Messages, field values, and field *keys* all carry the adversarial content
+   the findings concern (newlines, quotes, backslashes, whitespace, '=',
+   control bytes, edge floats). Keys additionally include the exact fixed
+   strings ts/level/msg: FR1 (Feature 0018) requires that an arbitrary key
+   keeps a logfmt record one unambiguous line and cannot shadow or duplicate
+   a fixed token. *)
 
-   IMPROVEMENT (follow-up, outside Feature 0016): a user field literally named
-   "ts"/"level"/"msg" collides with logfmt's fixed keys — a logfmt analogue of
-   the JSON duplicate-key finding 4, not addressed by this feature. *)
-
-let reserved_logfmt_keys = [ "ts"; "level"; "msg" ]
-
-let gen_key =
-  let open QCheck.Gen in
-  let ident_char =
-    oneof
-      [ char_range 'a' 'z'; char_range 'A' 'Z'; char_range '0' '9'; return '_' ]
-  in
-  map
-    (fun s -> if List.mem s reserved_logfmt_keys then s ^ "_" else s)
-    (string_size ~gen:ident_char (int_range 1 6))
+let fixed_logfmt_keys = [ "ts"; "level"; "msg" ]
 
 let gen_text_char =
   let open QCheck.Gen in
@@ -525,6 +509,32 @@ let gen_text_char =
 
 let gen_str =
   QCheck.Gen.string_size ~gen:gen_text_char (QCheck.Gen.int_range 0 12)
+
+(* Keys mix safe identifiers, fully adversarial strings (same alphabet as
+   values, including the empty key), and the exact fixed keys. *)
+let gen_key =
+  let open QCheck.Gen in
+  let ident_char =
+    oneof
+      [ char_range 'a' 'z'; char_range 'A' 'Z'; char_range '0' '9'; return '_' ]
+  in
+  oneof_weighted
+    [
+      (5, string_size ~gen:ident_char (int_range 1 6));
+      (3, string_size ~gen:gen_text_char (int_range 0 6));
+      (2, oneof_list fixed_logfmt_keys);
+    ]
+
+(* Key generator for the key-focused logfmt property: adversarial and
+   fixed-key content only, so every generated field stresses the key grammar
+   rather than occasionally hitting it. *)
+let gen_adversarial_key =
+  let open QCheck.Gen in
+  oneof_weighted
+    [
+      (3, string_size ~gen:gen_text_char (int_range 0 6));
+      (2, oneof_list fixed_logfmt_keys);
+    ]
 
 (* Edge-case floats for the value generators; [special_floats] (below) adds the
    non-finite IEEE values. The split is for readability only: post-0017
@@ -569,7 +579,7 @@ let gen_src_pos =
        (string_size ~gen:(char_range 'a' 'z') (int_range 1 8))
        (int_range 0 100_000) (int_range 0 200))
 
-let gen_entry ~specials =
+let gen_entry ~gen_field_key ~min_fields ~specials =
   let open QCheck.Gen in
   let gen_ts =
     map
@@ -590,13 +600,13 @@ let gen_entry ~specials =
     ]
   >>= fun level ->
   gen_str >>= fun message ->
-  list_size (int_range 0 5) (pair gen_key (gen_value ~specials))
+  list_size (int_range min_fields 5) (pair gen_field_key (gen_value ~specials))
   >>= fun fields ->
   gen_src_pos >>= fun src_pos ->
   return (Entry.create ~level ~message ~fields ?src_pos ~timestamp ())
 
 let print_entry e =
-  let field (k, v) = Printf.sprintf "%s=%S" k (Value.to_string v) in
+  let field (k, v) = Printf.sprintf "%S=%S" k (Value.to_string v) in
   Printf.sprintf "{ts=%s level=%s msg=%S fields=[%s] src_pos=%b}"
     (Ptime.to_rfc3339 ~tz_offset_s:0 e.Entry.timestamp)
     (Level.to_string e.Entry.level)
@@ -604,7 +614,15 @@ let print_entry e =
     (String.concat "; " (List.map field e.Entry.fields))
     (Option.is_some e.Entry.src_pos)
 
-let arb_entry ~specials = QCheck.make ~print:print_entry (gen_entry ~specials)
+let arb_entry ~specials =
+  QCheck.make ~print:print_entry
+    (gen_entry ~gen_field_key:gen_key ~min_fields:0 ~specials)
+
+(* Key-stress entries for the logfmt key property: at least one field, every
+   key drawn from the adversarial pool. *)
+let arb_entry_adversarial_keys =
+  QCheck.make ~print:print_entry
+    (gen_entry ~gen_field_key:gen_adversarial_key ~min_fields:1 ~specials:true)
 
 (* ── Entry equality (NaN-aware) ──────────────────────────────────────────── *)
 
@@ -710,58 +728,66 @@ let entry_of_json label j =
 
 (* ── logfmt test-side parser ─────────────────────────────────────────────── *)
 
-(* Reverse the logfmt escaping (Decision 4). Tokens are separated by unquoted
-   spaces; a quoted token is unescaped with the inverse table (\\ → \, \" → ",
-   \n → newline, \r → CR, \t → tab). An unquoted token is literal — the
-   formatter quotes any value containing an escape character, so an unquoted
-   token can never contain one. *)
+(* Reverse the logfmt escaping (Decision 4; keys joined the same grammar in
+   Feature 0018). Tokens are separated by unquoted spaces; the key and the
+   value position may each be quoted, and a quoted segment is unescaped with
+   the inverse table (\\ → \, \" → ", \n → newline, \r → CR, \t → tab). An
+   unquoted segment is literal — the formatter quotes any key or value
+   containing an escape character, so an unquoted segment can never contain
+   one. *)
 let parse_logfmt_tokens line =
   let n = String.length line in
   let i = ref 0 in
+  let parse_quoted () =
+    incr i;
+    (* opening quote *)
+    let buf = Buffer.create 16 in
+    let closed = ref false in
+    while not !closed do
+      if !i >= n then failwith "parse_logfmt: unterminated quote";
+      match line.[!i] with
+      | '\\' ->
+          incr i;
+          if !i >= n then failwith "parse_logfmt: trailing backslash";
+          (match line.[!i] with
+          | '\\' -> Buffer.add_char buf '\\'
+          | '"' -> Buffer.add_char buf '"'
+          | 'n' -> Buffer.add_char buf '\n'
+          | 'r' -> Buffer.add_char buf '\r'
+          | 't' -> Buffer.add_char buf '\t'
+          | c -> failwith (Printf.sprintf "parse_logfmt: bad escape \\%c" c));
+          incr i
+      | '"' ->
+          closed := true;
+          incr i
+      | c ->
+          Buffer.add_char buf c;
+          incr i
+    done;
+    Buffer.contents buf
+  in
   let toks = ref [] in
   while !i < n do
     while !i < n && line.[!i] = ' ' do
       incr i
     done;
     if !i < n then begin
-      let kstart = !i in
-      while !i < n && line.[!i] <> '=' do
-        incr i
-      done;
-      if !i >= n then failwith "parse_logfmt: key without '='";
-      let key = String.sub line kstart (!i - kstart) in
+      let key =
+        if line.[!i] = '"' then parse_quoted ()
+        else begin
+          let kstart = !i in
+          while !i < n && line.[!i] <> '=' do
+            incr i
+          done;
+          String.sub line kstart (!i - kstart)
+        end
+      in
+      if !i >= n || line.[!i] <> '=' then
+        failwith "parse_logfmt: key without '='";
       incr i;
       (* skip '=' *)
       let value =
-        if !i < n && line.[!i] = '"' then begin
-          incr i;
-          (* opening quote *)
-          let buf = Buffer.create 16 in
-          let closed = ref false in
-          while not !closed do
-            if !i >= n then failwith "parse_logfmt: unterminated quote";
-            match line.[!i] with
-            | '\\' ->
-                incr i;
-                if !i >= n then failwith "parse_logfmt: trailing backslash";
-                (match line.[!i] with
-                | '\\' -> Buffer.add_char buf '\\'
-                | '"' -> Buffer.add_char buf '"'
-                | 'n' -> Buffer.add_char buf '\n'
-                | 'r' -> Buffer.add_char buf '\r'
-                | 't' -> Buffer.add_char buf '\t'
-                | c ->
-                    failwith (Printf.sprintf "parse_logfmt: bad escape \\%c" c));
-                incr i
-            | '"' ->
-                closed := true;
-                incr i
-            | c ->
-                Buffer.add_char buf c;
-                incr i
-          done;
-          Buffer.contents buf
-        end
+        if !i < n && line.[!i] = '"' then parse_quoted ()
         else begin
           let vstart = !i in
           while !i < n && line.[!i] <> ' ' do
@@ -786,12 +812,21 @@ type logfmt_norm = {
   lfields : (string * string) list;
 }
 
+(* The oracle encodes the key contract (oracle-encodes-contract-not-library-
+   default): an exact fixed-key match is renamed with the machine-detectable
+   [olog.] prefix (Feature 0018 Decision 1); every other key passes through
+   untouched. *)
+let logfmt_field_key k = if List.mem k fixed_logfmt_keys then "olog." ^ k else k
+
 let logfmt_norm_of_entry e =
   {
     lts = Ptime.to_rfc3339 ~tz_offset_s:0 e.Entry.timestamp;
     llevel = Level.to_string e.Entry.level;
     lmsg = e.Entry.message;
-    lfields = List.map (fun (k, v) -> (k, Value.to_string v)) e.Entry.fields;
+    lfields =
+      List.map
+        (fun (k, v) -> (logfmt_field_key k, Value.to_string v))
+        e.Entry.fields;
   }
 
 let parse_logfmt s =
@@ -802,6 +837,41 @@ let parse_logfmt s =
   | ("ts", lts) :: ("level", llevel) :: ("msg", lmsg) :: rest ->
       { lts; llevel; lmsg; lfields = rest }
   | _ -> failwith "parse_logfmt: unexpected fixed-key layout"
+
+(* A user field named exactly like a fixed key cannot shadow or duplicate the
+   fixed token: it is renamed with the [olog.] prefix (FR1, Feature 0018
+   Decision 1). A key already inside the [olog.] namespace passes through
+   untouched — the rename targets exact fixed-key matches only, so the pinned
+   line deliberately shows the resulting benign user-key alias. Defined here
+   (not in the unit-test section) because it reuses [parse_logfmt_tokens] to
+   assert the parsed token stream carries each fixed key exactly once. *)
+let test_logfmt_fixed_key_collision () =
+  let fields =
+    [
+      ("ts", Value.string "x");
+      ("level", Value.string "y");
+      ("msg", Value.string "z");
+      ("olog.ts", Value.string "w");
+    ]
+  in
+  let entry = make_entry ~fields "ev" in
+  let result = Formatter.logfmt entry in
+  let expected =
+    Printf.sprintf
+      "ts=%s level=info msg=ev olog.ts=x olog.level=y olog.msg=z olog.ts=w\n"
+      epoch_str
+  in
+  Alcotest.(check string) "fixed-key collisions renamed" expected result;
+  let toks =
+    parse_logfmt_tokens (String.sub result 0 (String.length result - 1))
+  in
+  List.iter
+    (fun k ->
+      let occurrences =
+        List.length (List.filter (fun (k', _) -> String.equal k' k) toks)
+      in
+      Alcotest.(check int) (k ^ " appears exactly once") 1 occurrences)
+    fixed_logfmt_keys
 
 let logfmt_norm_equal a b =
   String.equal a.lts b.lts
@@ -912,6 +982,8 @@ let () =
             test_logfmt_single_line_newline_field;
           Alcotest.test_case "backslash and quote unambiguous" `Quick
             test_logfmt_backslash_quote_unambiguous;
+          Alcotest.test_case "fixed-key collision renamed" `Quick
+            test_logfmt_fixed_key_collision;
         ] );
       ( "Formatter.text",
         [
@@ -935,6 +1007,8 @@ let () =
           qcheck_case "json round-trip" (arb_entry ~specials:true)
             prop_json_roundtrip;
           qcheck_case "logfmt round-trip" (arb_entry ~specials:true)
+            prop_logfmt_roundtrip;
+          qcheck_case "logfmt key round-trip" arb_entry_adversarial_keys
             prop_logfmt_roundtrip;
           qcheck_case "text contract" (arb_entry ~specials:true)
             prop_text_contract;

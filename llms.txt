@@ -12,8 +12,8 @@ all in direct-style code with no monads.
 olog is not yet published to opam. Pin it from source:
 
 ```
-opam pin add olog.dev git+https://github.com/yourhandle/olog.git
-opam pin add olog_ppx.dev git+https://github.com/yourhandle/olog.git
+opam pin add olog.dev git+https://github.com/ShipOfTheDesert/olog.git
+opam pin add olog_ppx.dev git+https://github.com/ShipOfTheDesert/olog.git
 ```
 
 Or, if vendoring / working from a local checkout:
@@ -68,20 +68,31 @@ let () =
 dedicated worker fiber. Callers enqueue entries and return immediately;
 a worker drains the queue and dispatches to configured sinks. If the
 queue is full, entries are dropped and counted (never blocks the caller).
-Every accepted entry is either emitted to the sinks or counted in
-`drop_count` — never silently lost — under concurrent load and switch
-cancellation.
+Every accepted entry is either emitted to the sinks (counted in
+`emit_count`) or counted in `drop_count` — never silently lost — under
+concurrent load and switch cancellation. Drops are attributed by cause:
+`drops_queue_full`, `drops_after_shutdown`, `drops_on_cancel` (their sum
+is `drop_count`).
 
 **Entry** — an immutable record: timestamp, level, message, structured
 fields, and optional source position.
 
 **Context** — fiber-local storage for structured fields. Fields set via
 `Context.with_context` are automatically merged into every log entry
-emitted within that scope. Context is isolated between fibers.
+emitted within that scope. Context is isolated between fibers: a fiber
+forked inside `with_context` starts with an empty context (ADR 0002,
+affirmed by ADR 0019). To carry fields into a forked fiber, capture them
+with `Context.current ()` before the fork and re-apply them with
+`with_context` inside the fiber.
 
 **Formatter** — a pure function `Entry.t -> string`. Built-in: `json`
-(JSON Lines), `logfmt`, and `text`. No Eio dependency — testable
-without a scheduler.
+(JSON Lines), `logfmt`, and `text`. Every formatter emits exactly one
+line per entry for arbitrary message and field content. `json` nests
+user fields under `"fields"` so envelope keys cannot collide; `logfmt`
+quotes/escapes both keys and values under a single grammar and renames a
+user field key that is exactly `ts`, `level`, or `msg` with an `olog.`
+prefix so fixed tokens cannot be shadowed or duplicated. No Eio
+dependency — testable without a scheduler.
 
 **Output** — a destination vtable (`write` + `close`, each returning
 `(unit, string) result`). Built-in: `stdout`, `stderr`, and `make` for any
@@ -98,13 +109,14 @@ any allocation.
 ### Logger
 
 ```ocaml
-(* An output destination. Each operation reports expected failures as
-   [Error msg] rather than raising; the worker logs a fallback line to stderr
-   and continues with the next entry. [Eio.Cancel.Cancelled] is always
-   re-raised, never swallowed. *)
+(* An output destination. [emit] receives a non-empty batch of entries in
+   enqueue order. Each operation reports expected failures as [Error msg]
+   rather than raising; an [Error] covers the whole batch — the worker logs
+   one fallback line to stderr and continues with later entries.
+   [Eio.Cancel.Cancelled] is always re-raised, never swallowed. *)
 type Logger.sink = {
   name  : string;
-  emit  : Entry.t -> (unit, string) result;
+  emit  : Entry.t list -> (unit, string) result;
   flush : unit -> (unit, string) result;
   close : unit -> (unit, string) result;
 }
@@ -209,7 +221,20 @@ val Level.of_string : string -> (Level.t, string) result
 ### Value
 
 ```ocaml
-type Value.t = String of string | Int of int | Float of float | Bool of bool | Null
+(* The type is private: build values with the smart constructors below;
+   pattern-match the constructors freely. *)
+type Value.t = private
+  | String of string | Int of int | Float of float | Bool of bool | Null
+
+val Value.string : string -> Value.t
+val Value.int    : int -> Value.t
+(* [Value.float f] coerces a non-finite [f] (nan, infinity, neg_infinity)
+   to a [String] of its plain-text form ("nan"/"inf"/"-inf"), so a [Float]
+   is always finite and every value has a standard-JSON representation. *)
+val Value.float  : float -> Value.t
+val Value.bool   : bool -> Value.t
+val Value.null   : Value.t
+
 val Value.to_string : Value.t -> string
 ```
 
@@ -239,14 +264,14 @@ injection and automatic `Value` wrapping for literal field values.
 ```ocaml
 (* Before — manual *)
 Logger.log logger ~level:Level.Info "request received"
-  ~fields:[("method", Value.String "GET"); ("path", Value.String "/health")]
+  ~fields:[("method", Value.string "GET"); ("path", Value.string "/health")]
 
 (* After — with PPX *)
 [%log.info logger "request received" [("method", "GET"); ("path", "/health")]]
 ```
 
 String and integer literals in the field list are automatically wrapped
-in `Value.String` / `Value.Int`. The PPX also generates an
+via `Value.string` / `Value.int`. The PPX also generates an
 `is_enabled` guard so no allocation occurs when the level is filtered.
 
 Available extensions: `[%log.trace]`, `[%log.debug]`, `[%log.info]`,
@@ -269,12 +294,12 @@ Exception variants: `[%log.error_exn logger exn bt "msg" fields]`.
 ```ocaml
 (* All log calls inside the callback automatically include request_id *)
 Context.with_context
-  ~fields:[("request_id", Value.String "req-abc123")]
+  ~fields:[("request_id", Value.string "req-abc123")]
 @@ fun () ->
   Logger.log logger ~level:Level.Info "handling request";
   (* Nested context — adds user_id, keeps request_id *)
   Context.with_context
-    ~fields:[("user_id", Value.Int 42)]
+    ~fields:[("user_id", Value.int 42)]
   @@ fun () ->
     Logger.log logger ~level:Level.Debug "authorized"
 ```
@@ -287,7 +312,7 @@ begin
   with exn ->
     let bt = Printexc.get_raw_backtrace () in
     Logger.log_exn logger ~level:Level.Error exn bt "operation failed"
-      ~fields:[("op", Value.String "dangerous_operation")]
+      ~fields:[("op", Value.string "dangerous_operation")]
 end
 ```
 
@@ -331,14 +356,15 @@ match logger with
 
 ```ocaml
 let d = Logger.diagnostics logger in
-Printf.printf "queue=%d/%d drops=%d shutdown=%b\n"
-  d.queue_depth d.queue_capacity d.drop_count d.is_shutdown
+Printf.printf "queue=%d/%d emitted=%d drops=%d (full=%d shutdown=%d cancel=%d) shutdown=%b\n"
+  d.queue_depth d.queue_capacity d.emit_count d.drop_count
+  d.drops_queue_full d.drops_after_shutdown d.drops_on_cancel d.is_shutdown
 ```
 
 ## Key Design Decisions
 
 - **Never blocks the caller**: if the queue is full, entries are dropped
-  and counted. Use `diagnostics` to monitor drop counts.
+  and counted. Use `diagnostics` to monitor emit and drop counts by cause.
 - **Errors as values**: creation (`Config.make`, `Logger.create`), sink
   operations (`emit`/`flush`/`close`), and parsers (`Level.of_string`,
   `Value.of_yojson`) return `result` types rather than raising.

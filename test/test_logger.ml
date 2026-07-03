@@ -58,16 +58,18 @@ let mock_clock (r : float ref) : _ Eio.Time.clock =
 
 (* Most test sinks perform a side effect and succeed; [mk_sink] wraps the
    effectful callbacks so each returns [Ok ()] under the result contract
-   (RFC 0013). A raising callback still raises (it never reaches [Ok ()]),
+   (RFC 0013). The [emit] callback is per-entry: it is applied to each entry
+   of the batch in order, so counting/capturing tests stay batch-size
+   agnostic. A raising callback still raises (it never reaches [Ok ()]),
    which is exactly what the contract-violation tests need. Tests that must
-   return [Error] construct the record directly. *)
+   return [Error] or see the whole batch construct the record directly. *)
 let mk_sink ?(name = "test") ?(emit = fun _ -> ()) ?(flush = fun () -> ())
     ?(close = fun () -> ()) () : Olog.Logger.sink =
   {
     Olog.Logger.name;
     emit =
-      (fun e ->
-        emit e;
+      (fun entries ->
+        List.iter emit entries;
         Ok ());
     flush =
       (fun () ->
@@ -106,6 +108,15 @@ let string_contains ~needle haystack =
     i + nl <= hl && (String.sub haystack i nl = needle || at (i + 1))
   in
   nl = 0 || at 0
+
+let count_occurrences ~needle haystack =
+  let nl = String.length needle and hl = String.length haystack in
+  let rec at i acc =
+    if i + nl > hl then acc
+    else if String.sub haystack i nl = needle then at (i + nl) (acc + 1)
+    else at (i + 1) acc
+  in
+  if nl = 0 then 0 else at 0 0
 
 (* ── Group 2: is_enabled ─────────────────────────────────────────────────── *)
 
@@ -256,7 +267,9 @@ let test_log_continues_after_sink_raise () =
   Alcotest.(check int)
     "worker continues after sink emit raises" 1 !second_emitted
 
-(* F13 — sink raising on one entry must not stop processing of the next *)
+(* F13 — sink raising on one entry must not stop processing of the next. The
+   yield between the logs lets the worker take each entry as its own batch, so
+   the raise lands on one delivery and the assertion counts the next. *)
 let test_log_next_entry_after_raise () =
   Eio_main.run @@ fun env ->
   let call_count = ref 0 in
@@ -271,13 +284,17 @@ let test_log_next_entry_after_raise () =
   Eio.Switch.run (fun sw ->
       let logger = make_logger ~sw ~clock:env#clock config "test" in
       Olog.Logger.log logger ~level:Olog.Level.Info "first";
+      Eio.Fiber.yield ();
       Olog.Logger.log logger ~level:Olog.Level.Info "second";
       Olog.Logger.flush logger);
   Alcotest.(check int)
     "subsequent entries emitted after sink error" 2 !call_count
 
-(* F3 — a sink that returns [Error] on one entry must not halt delivery of
-   subsequent entries (the result-value failure path, distinct from a raise). *)
+(* F3 — a sink that returns [Error] on one delivery must not halt delivery of
+   subsequent entries (the result-value failure path, distinct from a raise).
+   Yields between the logs pin one entry per batch so each delivery is its own
+   [emit] call; multi-entry batch failure is covered by
+   [test_batch_write_error_continues]. *)
 let test_sink_emit_error_does_not_stop_worker () =
   Eio_main.run @@ fun env ->
   let call_count = ref 0 in
@@ -296,7 +313,9 @@ let test_sink_emit_error_does_not_stop_worker () =
   Eio.Switch.run (fun sw ->
       let logger = make_logger ~sw ~clock:env#clock config "test" in
       Olog.Logger.log logger ~level:Olog.Level.Info "first";
+      Eio.Fiber.yield ();
       Olog.Logger.log logger ~level:Olog.Level.Info "second";
+      Eio.Fiber.yield ();
       Olog.Logger.log logger ~level:Olog.Level.Info "third";
       Olog.Logger.flush logger);
   Alcotest.(check int)
@@ -304,7 +323,8 @@ let test_sink_emit_error_does_not_stop_worker () =
 
 (* F3 — a contract-violating sink (one that raises instead of returning a
    result) must not kill the worker; entries logged after the raise are still
-   delivered. *)
+   delivered. Yields between the logs pin one entry per batch so the raise on
+   the first delivery leaves four later deliveries to count. *)
 let test_contract_violating_sink_does_not_stop_worker () =
   Eio_main.run @@ fun env ->
   let call_count = ref 0 in
@@ -323,7 +343,8 @@ let test_contract_violating_sink_does_not_stop_worker () =
   Eio.Switch.run (fun sw ->
       let logger = make_logger ~sw ~clock:env#clock config "test" in
       for _ = 1 to 5 do
-        Olog.Logger.log logger ~level:Olog.Level.Info "msg"
+        Olog.Logger.log logger ~level:Olog.Level.Info "msg";
+        Eio.Fiber.yield ()
       done;
       Olog.Logger.flush logger);
   Alcotest.(check int)
@@ -358,6 +379,150 @@ let test_sink_error_reports_fallback_line_to_stderr () =
   Alcotest.(check bool)
     "stderr fallback includes the sink's error message" true
     (string_contains ~needle:"disk full" output)
+
+(* FR2, ADR 0007 (Feature 0018) — batch failure granularity: a sink [Error]
+   covers the whole batch, is reported to stderr exactly once, and the worker
+   continues with later entries — the failed batch is not retried. The sink
+   consumes its argument as a list, pinning the batch-shaped contract. *)
+let test_batch_write_error_continues () =
+  let received = ref [] in
+  let calls = ref 0 in
+  let output =
+    capture_stderr (fun () ->
+        Eio_main.run @@ fun env ->
+        let failing_once_sink : Olog.Logger.sink =
+          {
+            Olog.Logger.name = "failing-once";
+            emit =
+              (fun entries ->
+                incr calls;
+                received := List.rev_append entries !received;
+                if !calls = 1 then Error "batch write failed" else Ok ());
+            flush = (fun () -> Ok ());
+            close = (fun () -> Ok ());
+          }
+        in
+        let config = make_config ~sinks:[ failing_once_sink ] () in
+        Eio.Switch.run (fun sw ->
+            let logger = make_logger ~sw ~clock:env#clock config "test" in
+            Olog.Logger.log logger ~level:Olog.Level.Info "first";
+            Olog.Logger.log logger ~level:Olog.Level.Info "second";
+            Olog.Logger.log logger ~level:Olog.Level.Info "third";
+            Olog.Logger.flush logger))
+  in
+  Alcotest.(check (list string))
+    "worker keeps delivering later entries after a batch Error"
+    [ "first"; "second"; "third" ]
+    (List.rev_map (fun (e : Olog.Entry.t) -> e.Olog.Entry.message) !received);
+  Alcotest.(check int)
+    "the batch Error is reported to stderr exactly once" 1
+    (count_occurrences ~needle:"batch write failed" output)
+
+(* ── Group 5b: greedy batch drain (FR2, Feature 0018) ────────────────────── *)
+
+(* FR2 — entries that are consecutively queued while the worker is busy reach
+   the sink in ONE [emit] call, in enqueue order. The warmup entry parks the
+   worker inside [emit] (awaiting the latch) so the five entries queue up
+   consecutively before the worker's next take; releasing the latch lets the
+   greedy drain collect them as a single batch. The sink records whole batches
+   — batch boundaries are the behaviour under test — so it is built directly
+   rather than through the per-entry [mk_sink]. *)
+let test_batch_delivery () =
+  Eio_main.run @@ fun env ->
+  let batches = ref [] in
+  let calls = ref 0 in
+  let latch, release = Eio.Promise.create () in
+  let sink : Olog.Logger.sink =
+    {
+      Olog.Logger.name = "batch-recording";
+      emit =
+        (fun entries ->
+          incr calls;
+          batches :=
+            List.map (fun (e : Olog.Entry.t) -> e.Olog.Entry.message) entries
+            :: !batches;
+          if !calls = 1 then Eio.Promise.await latch;
+          Ok ());
+      flush = (fun () -> Ok ());
+      close = (fun () -> Ok ());
+    }
+  in
+  let config = make_config ~sinks:[ sink ] () in
+  Eio.Switch.run (fun sw ->
+      let logger = make_logger ~sw ~clock:env#clock config "test" in
+      Olog.Logger.log logger ~level:Olog.Level.Info "warmup";
+      Eio.Fiber.yield ();
+      (* Worker is parked in [emit ["warmup"]]; these queue consecutively. *)
+      for i = 1 to 5 do
+        Olog.Logger.log logger ~level:Olog.Level.Info
+          (Printf.sprintf "entry-%d" i)
+      done;
+      Eio.Promise.resolve release ();
+      Olog.Logger.flush logger);
+  Alcotest.(check (list (list string)))
+    "consecutively queued entries arrive as one in-order batch"
+    [ [ "warmup" ]; [ "entry-1"; "entry-2"; "entry-3"; "entry-4"; "entry-5" ] ]
+    (List.rev !batches)
+
+(* FR2, ADR 0004 — the greedy drain must stop at the first control message:
+   entries enqueued after a [Flush] are not written before it resolves. The
+   sink records one ordered event trace (batches and sink-flush calls), so a
+   barrier crossing shows up as an [after-*] message in a batch preceding the
+   "flush" event. Same warmup-latch parking as [test_batch_delivery]; the
+   [Fiber.both] enqueues [before-1; before-2; Flush; after-1; after-2] before
+   the worker resumes. Ends with [shutdown] (not a second [flush]) so the
+   trace is not extended by the switch-close cancellation drain. *)
+let test_batch_respects_flush_barrier () =
+  Eio_main.run @@ fun env ->
+  let events = ref [] in
+  let calls = ref 0 in
+  let latch, release = Eio.Promise.create () in
+  let sink : Olog.Logger.sink =
+    {
+      Olog.Logger.name = "barrier-recording";
+      emit =
+        (fun entries ->
+          incr calls;
+          events :=
+            ("batch:"
+            ^ String.concat ","
+                (List.map
+                   (fun (e : Olog.Entry.t) -> e.Olog.Entry.message)
+                   entries))
+            :: !events;
+          if !calls = 1 then Eio.Promise.await latch;
+          Ok ());
+      flush =
+        (fun () ->
+          events := "flush" :: !events;
+          Ok ());
+      close = (fun () -> Ok ());
+    }
+  in
+  let config = make_config ~sinks:[ sink ] () in
+  Eio.Switch.run (fun sw ->
+      let logger = make_logger ~sw ~clock:env#clock config "test" in
+      Olog.Logger.log logger ~level:Olog.Level.Info "warmup";
+      Eio.Fiber.yield ();
+      Olog.Logger.log logger ~level:Olog.Level.Info "before-1";
+      Olog.Logger.log logger ~level:Olog.Level.Info "before-2";
+      Eio.Fiber.both
+        (fun () -> Olog.Logger.flush logger)
+        (fun () ->
+          Olog.Logger.log logger ~level:Olog.Level.Info "after-1";
+          Olog.Logger.log logger ~level:Olog.Level.Info "after-2";
+          Eio.Promise.resolve release ());
+      Olog.Logger.shutdown logger);
+  Alcotest.(check (list string))
+    "greedy drain stops at the flush barrier"
+    [
+      "batch:warmup";
+      "batch:before-1,before-2";
+      "flush";
+      "batch:after-1,after-2";
+      "flush";
+    ]
+    (List.rev !events)
 
 (* ── Group 6: drop semantics ─────────────────────────────────────────────── *)
 
@@ -408,6 +573,133 @@ let test_log_does_not_suspend () =
         "log returns without suspending when queue is full" 1 diag.drop_count;
       Eio.Promise.resolve release ();
       Olog.Logger.flush logger)
+
+(* FR3 (Feature 0018) — each drop path increments its own cause counter, and
+   [drop_count] stays the total. Three scenarios, one per cause:
+
+   queue-full: the worker is parked inside [sink.emit] on a latch, the queue
+   (capacity 1) is filled, and two further entries are rejected by the
+   producer fast path — [drops_queue_full] only.
+
+   after-shutdown: entries logged after [shutdown] returns are rejected by
+   the producer fast path observing a non-[Running] state —
+   [drops_after_shutdown] only.
+
+   cancellation loss: the worker is parked inside [sink.emit] when the switch
+   fails; the cancellation drain re-delivers the next queued entry to the
+   sink, which raises [Eio.Cancel.Cancelled] (the one exception [run_sink_op]
+   re-raises, simulating a sink torn down by the same cancellation), aborting
+   the drain — the remaining queued entries are counted by the worker's
+   final stop-and-count drain as [drops_on_cancel]. Entries handed to the
+   sink before the abort count as emitted, so conservation is checkable from
+   diagnostics alone even on this path. *)
+let test_drop_cause_counters () =
+  (* Scenario 1: queue-full. *)
+  let queue_full_diag =
+    Eio_main.run @@ fun env ->
+    let latch, release = Eio.Promise.create () in
+    let sink = mk_sink ~emit:(fun _ -> Eio.Promise.await latch) () in
+    let config = make_config ~queue_depth:1 ~sinks:[ sink ] () in
+    Eio.Switch.run (fun sw ->
+        let logger = make_logger ~sw ~clock:env#clock config "test" in
+        (* entry-1: worker takes it and parks inside sink.emit *)
+        Olog.Logger.log logger ~level:Olog.Level.Info "entry-1";
+        Eio.Fiber.yield ();
+        (* entry-2 fills the queue; entry-3 and entry-4 are dropped *)
+        Olog.Logger.log logger ~level:Olog.Level.Info "entry-2";
+        Olog.Logger.log logger ~level:Olog.Level.Info "entry-3";
+        Olog.Logger.log logger ~level:Olog.Level.Info "entry-4";
+        let diag = Olog.Logger.diagnostics logger in
+        Eio.Promise.resolve release ();
+        Olog.Logger.flush logger;
+        diag)
+  in
+  Alcotest.(check int)
+    "queue-full drops land in drops_queue_full" 2
+    queue_full_diag.Olog.Logger.drops_queue_full;
+  Alcotest.(check int)
+    "queue-full drops do not land in drops_after_shutdown" 0
+    queue_full_diag.Olog.Logger.drops_after_shutdown;
+  Alcotest.(check int)
+    "queue-full drops do not land in drops_on_cancel" 0
+    queue_full_diag.Olog.Logger.drops_on_cancel;
+  Alcotest.(check int)
+    "drop_count is the queue-full total" 2
+    queue_full_diag.Olog.Logger.drop_count;
+  (* Scenario 2: after-shutdown. *)
+  let after_shutdown_diag =
+    Eio_main.run @@ fun env ->
+    let sink = mk_sink () in
+    let config = make_config ~sinks:[ sink ] () in
+    Eio.Switch.run (fun sw ->
+        let logger = make_logger ~sw ~clock:env#clock config "test" in
+        Olog.Logger.shutdown logger;
+        Olog.Logger.log logger ~level:Olog.Level.Info "after-shutdown-1";
+        Olog.Logger.log logger ~level:Olog.Level.Info "after-shutdown-2";
+        Olog.Logger.log logger ~level:Olog.Level.Info "after-shutdown-3";
+        Olog.Logger.diagnostics logger)
+  in
+  Alcotest.(check int)
+    "post-shutdown drops land in drops_after_shutdown" 3
+    after_shutdown_diag.Olog.Logger.drops_after_shutdown;
+  Alcotest.(check int)
+    "post-shutdown drops do not land in drops_queue_full" 0
+    after_shutdown_diag.Olog.Logger.drops_queue_full;
+  Alcotest.(check int)
+    "post-shutdown drops do not land in drops_on_cancel" 0
+    after_shutdown_diag.Olog.Logger.drops_on_cancel;
+  Alcotest.(check int)
+    "drop_count is the post-shutdown total" 3
+    after_shutdown_diag.Olog.Logger.drop_count;
+  (* Scenario 3: cancellation loss. *)
+  let on_cancel_diag =
+    Eio_main.run @@ fun env ->
+    let gate, _never_resolved = Eio.Promise.create () in
+    let emit_calls = ref 0 in
+    let sink =
+      mk_sink
+        ~emit:(fun _ ->
+          incr emit_calls;
+          if !emit_calls = 1 then Eio.Promise.await gate
+          else raise (Eio.Cancel.Cancelled (Failure "sink torn down")))
+        ()
+    in
+    let config = make_config ~queue_depth:16 ~sinks:[ sink ] () in
+    let logger_ref = ref None in
+    (try
+       Eio.Switch.run (fun sw ->
+           let logger = make_logger ~sw ~clock:env#clock config "test" in
+           logger_ref := Some logger;
+           (* entry-1: worker takes it and parks inside sink.emit *)
+           Olog.Logger.log logger ~level:Olog.Level.Info "entry-1";
+           Eio.Fiber.yield ();
+           (* entry-2 is re-delivered by the cancellation drain (the sink
+              raises Cancelled at it); entry-3 and entry-4 stay queued and
+              are counted by the final stop-and-count drain *)
+           Olog.Logger.log logger ~level:Olog.Level.Info "entry-2";
+           Olog.Logger.log logger ~level:Olog.Level.Info "entry-3";
+           Olog.Logger.log logger ~level:Olog.Level.Info "entry-4";
+           Eio.Switch.fail sw (Failure "cancel"))
+     with Failure _ -> ());
+    match !logger_ref with
+    | Some logger -> Olog.Logger.diagnostics logger
+    | None -> Alcotest.fail "logger was not created"
+  in
+  Alcotest.(check int)
+    "cancellation losses land in drops_on_cancel" 2
+    on_cancel_diag.Olog.Logger.drops_on_cancel;
+  Alcotest.(check int)
+    "cancellation losses do not land in drops_queue_full" 0
+    on_cancel_diag.Olog.Logger.drops_queue_full;
+  Alcotest.(check int)
+    "cancellation losses do not land in drops_after_shutdown" 0
+    on_cancel_diag.Olog.Logger.drops_after_shutdown;
+  Alcotest.(check int)
+    "drop_count is the cancellation-loss total" 2
+    on_cancel_diag.Olog.Logger.drop_count;
+  Alcotest.(check int)
+    "entries handed to the sink before the abort count as emitted" 2
+    on_cancel_diag.Olog.Logger.emit_count
 
 (* ── Group 7: flush ──────────────────────────────────────────────────────── *)
 
@@ -1085,6 +1377,76 @@ let test_conservation_after_cancellation () =
     (Atomic.get submitted)
     (Atomic.get emitted + drop_count)
 
+(* FR3, NFR3 (Feature 0018) — conservation must be checkable from diagnostics
+   alone: [submitted = emit_count + drop_count] and the per-cause counters sum
+   to [drop_count], under parallel producers and a mid-stream [shutdown]. The
+   test-side sink counter cross-checks that [emit_count] means entries handed
+   to the sinks, counted once per entry (not once per sink call). *)
+let test_conservation_with_split () =
+  Eio_main.run @@ fun env ->
+  let domain_mgr = env#domain_mgr in
+  let m_producers = 8 in
+  let k_entries = 1000 in
+  let submitted = Atomic.make 0 in
+  let emitted = Atomic.make 0 in
+  let sink = mk_sink ~emit:(fun _ -> Atomic.incr emitted) () in
+  let config = make_config ~queue_depth:16 ~sinks:[ sink ] () in
+  let diag = ref None in
+  Eio.Switch.run (fun sw ->
+      let logger = make_logger ~sw ~clock:env#clock config "test" in
+      Eio.Fiber.both
+        (fun () ->
+          conservation_producers ~domain_mgr ~submitted ~logger ~m_producers
+            ~k_entries)
+        (fun () ->
+          (* Let producers start contending, then shut down mid-stream. *)
+          Eio.Fiber.yield ();
+          Olog.Logger.shutdown logger);
+      diag := Some (Olog.Logger.diagnostics logger));
+  match !diag with
+  | None -> Alcotest.fail "diagnostics snapshot was not captured"
+  | Some d ->
+      Alcotest.(check int)
+        "conservation: submitted = emit_count + drop_count"
+        (Atomic.get submitted)
+        (d.Olog.Logger.emit_count + d.Olog.Logger.drop_count);
+      Alcotest.(check int)
+        "drop_count = sum of the per-cause counters" d.Olog.Logger.drop_count
+        (d.Olog.Logger.drops_queue_full + d.Olog.Logger.drops_after_shutdown
+       + d.Olog.Logger.drops_on_cancel);
+      Alcotest.(check int)
+        "emit_count matches the sink-side emitted counter" (Atomic.get emitted)
+        d.Olog.Logger.emit_count
+
+(* FR3 (Feature 0018) — [emit_count] counts entries, not sink calls: the
+   [logger.mli] contract says "once per entry regardless of the number of
+   sinks", which a single-sink test cannot distinguish from per-sink counting.
+   With two sinks, N entries must yield [emit_count = N], not [2N]; the
+   sink-side counters cross-check that each sink still saw every entry. *)
+let test_emit_count_counts_entries_not_sink_calls () =
+  Eio_main.run @@ fun env ->
+  let first_emitted = ref 0 in
+  let second_emitted = ref 0 in
+  let first = mk_sink ~emit:(fun _ -> incr first_emitted) () in
+  let second = mk_sink ~emit:(fun _ -> incr second_emitted) () in
+  let config = make_config ~sinks:[ first; second ] () in
+  let diag = ref None in
+  Eio.Switch.run (fun sw ->
+      let logger = make_logger ~sw ~clock:env#clock config "test" in
+      Olog.Logger.log logger ~level:Olog.Level.Info "one";
+      Olog.Logger.log logger ~level:Olog.Level.Info "two";
+      Olog.Logger.log logger ~level:Olog.Level.Info "three";
+      Olog.Logger.shutdown logger;
+      diag := Some (Olog.Logger.diagnostics logger));
+  match !diag with
+  | None -> Alcotest.fail "diagnostics snapshot was not captured"
+  | Some d ->
+      Alcotest.(check int)
+        "emit_count counts once per entry regardless of the number of sinks" 3
+        d.Olog.Logger.emit_count;
+      Alcotest.(check int) "first sink saw every entry" 3 !first_emitted;
+      Alcotest.(check int) "second sink saw every entry" 3 !second_emitted
+
 (* ── Group: timestamp fallback (RFC 0013 F6) ─────────────────────────────── *)
 
 (* F6 — [Fail] mode probes the clock once at [create] and rejects an
@@ -1194,6 +1556,16 @@ let () =
             `Quick test_contract_violating_sink_does_not_stop_worker;
           Alcotest.test_case "sink error reports fallback line to stderr" `Quick
             test_sink_error_reports_fallback_line_to_stderr;
+          Alcotest.test_case "batch write error reported once, worker continues"
+            `Quick test_batch_write_error_continues;
+        ] );
+      ( "batching",
+        [
+          Alcotest.test_case
+            "consecutively queued entries delivered as one batch" `Quick
+            test_batch_delivery;
+          Alcotest.test_case "greedy drain stops at the flush barrier" `Quick
+            test_batch_respects_flush_barrier;
         ] );
       ( "drop",
         [
@@ -1201,6 +1573,8 @@ let () =
             test_drop_count_increments;
           Alcotest.test_case "log returns without suspending when queue is full"
             `Quick test_log_does_not_suspend;
+          Alcotest.test_case "each drop cause increments its own counter" `Quick
+            test_drop_cause_counters;
         ] );
       ( "flush",
         [
@@ -1286,6 +1660,12 @@ let () =
             `Quick test_conservation_under_concurrent_load;
           Alcotest.test_case "submitted = emitted + drops after cancellation"
             `Quick test_conservation_after_cancellation;
+          Alcotest.test_case
+            "submitted = emit_count + drop_count with per-cause split" `Quick
+            test_conservation_with_split;
+          Alcotest.test_case
+            "emit_count counts entries, not sink calls, with two sinks" `Quick
+            test_emit_count_counts_entries_not_sink_calls;
         ] );
       ( "timestamp",
         [
